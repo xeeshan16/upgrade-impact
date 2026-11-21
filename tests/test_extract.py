@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from upgrade_impact.extract import (
+    CLAIMS_SCHEMA,
+    build_prompt,
+    extract_claims,
+    parse_claims,
+    verify_claims,
+    verify_quote,
+)
+from upgrade_impact.models import (
+    Bump,
+    Claim,
+    ClaimKind,
+    Ecosystem,
+    Evidence,
+    NotesSection,
+    ReleaseNotes,
+)
+from upgrade_impact.notes import changelog_sections
+from upgrade_impact.providers.base import ProviderError
+from upgrade_impact.providers.fake import FakeChat, ScriptedChat
+
+BUMP = Bump(
+    ecosystem=Ecosystem.PYPI,
+    package="httpx",
+    from_version="0.27.0",
+    to_version="0.28.1",
+    source="flags",
+)
+
+
+def httpx_notes(fixtures: Path) -> ReleaseNotes:
+    text = (fixtures / "notes" / "httpx-CHANGELOG.md").read_text()
+    sections = [
+        NotesSection(version=v, source="changelog", lines=lines)
+        for v, lines in changelog_sections(text, "0.27.0", "0.28.1")
+    ]
+    return ReleaseNotes.from_sections("httpx", sections)
+
+
+def _line_of(notes: ReleaseNotes, needle: str) -> int:
+    return next(line.n for line in notes.lines if needle in line.text)
+
+
+def test_prompt_numbers_lines_and_fences_them(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    prompt, nonce = build_prompt(BUMP, notes, [line.n for line in notes.lines])
+    assert f"<<<NOTES {nonce}>>>" in prompt
+    assert f"<<<END NOTES {nonce}>>>" in prompt
+    n = _line_of(notes, "`proxies` argument")
+    assert f"N{n}: * The deprecated `proxies` argument has now been removed." in prompt
+    assert "=== version 0.28.0 ===" in prompt
+    assert "Upgrade: 0.27.0 -> 0.28.1" in prompt
+
+
+def test_verify_quote(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    n = _line_of(notes, "`proxies` argument")
+    assert verify_quote(notes, n, "The deprecated `proxies` argument has now been removed")
+    assert verify_quote(notes, n, '"proxies" argument has now been removed.')  # markup-insensitive
+    assert not verify_quote(notes, n, "the timeout argument was removed")
+    assert not verify_quote(notes, n + 1, "proxies argument has now been removed")
+    assert not verify_quote(notes, 10_000, "anything")
+    assert not verify_quote(notes, n, "the")  # too short to prove anything
+
+
+def test_verify_claims_drops_fabrications_and_splits_symbols(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    n = _line_of(notes, "`proxies` argument")
+    claims = [
+        Claim(
+            id="",
+            kind=ClaimKind.REMOVED,
+            summary="proxies removed",
+            symbols=["httpx.Client(proxies=...)", "AsyncClient", "Transport.handle_proxy"],
+            parameters=["proxies", "--proxies", "not an identifier"],
+            evidence=[Evidence(line=n, quote="deprecated `proxies` argument has now been removed")],
+        ),
+        Claim(
+            id="",
+            kind=ClaimKind.REMOVED,
+            summary="invented",
+            symbols=["Client.stream"],
+            evidence=[Evidence(line=n, quote="Client.stream was removed")],
+        ),
+        Claim(
+            id="",
+            kind=ClaimKind.REMOVED,
+            summary="duplicate",
+            symbols=["AsyncClient", "httpx.Client", "Transport.handle_proxy"],
+            parameters=["proxies"],
+            evidence=[Evidence(line=n, quote="proxies` argument has now been removed")],
+        ),
+    ]
+    kept, dropped = verify_claims(notes, claims)
+    assert dropped == 1
+    assert len(kept) == 1
+    claim = kept[0]
+    assert claim.id == "C1"
+    assert claim.verified
+    assert claim.version == "0.28.0"
+    # "Client" and "AsyncClient" are not literally in the notes line, but "Client" appears
+    # elsewhere in the 0.27.x/0.28.x notes? It does not: only symbols found anywhere survive.
+    assert claim.parameters == ["proxies"]
+    assert "Transport.handle_proxy" in claim.unverified_symbols
+    assert set(claim.symbols) | set(claim.unverified_symbols) == {
+        "httpx.Client",
+        "AsyncClient",
+        "Transport.handle_proxy",
+    }
+
+
+def test_parse_claims_is_lenient() -> None:
+    reply = """Here you go:
+```json
+{"changes": [
+  {"evidence": {"line": "N4", "quote": "x removed"}, "summary": "s", "kind": "Removed",
+   "symbols": ["x"], "parameters": []},
+  {"evidence": [{"line": 5, "quote": "y"}], "summary": "t", "kind": "weird kind"},
+  "not an object"
+]}
+```"""
+    claims, invalid = parse_claims(reply)
+    assert invalid == 1
+    assert [(c.kind, c.evidence[0].line) for c in claims] == [
+        (ClaimKind.REMOVED, 4),
+        (ClaimKind.OTHER, 5),
+    ]
+    assert parse_claims("[]") == ([], 0)
+
+
+def test_extract_with_a_scripted_model_and_one_repair(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    n = _line_of(notes, "`app` argument")
+    good = json.dumps(
+        {
+            "claims": [
+                {
+                    "evidence": [
+                        {"line": n, "quote": "The deprecated `app` argument has now been removed."}
+                    ],
+                    "summary": "Client(app=...) is gone; use transport=ASGITransport(app=...).",
+                    "kind": "removed",
+                    "symbols": [],
+                    "parameters": ["app"],
+                }
+            ]
+        }
+    )
+    chat = ScriptedChat(["I think the answer is", good])
+    result = extract_claims(chat, BUMP, notes, budget_tokens=5000)
+    assert result.run.calls == 2
+    assert len(chat.requests[1]) == 4  # system, user, bad assistant reply, repair request
+    assert chat.schemas[0] == CLAIMS_SCHEMA
+    assert [c.parameters for c in result.claims] == [["app"]]
+    assert result.dropped == 0
+    assert result.run.usage.total == 30
+
+
+def test_extract_reports_unparseable_and_failed_calls(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    result = extract_claims(ScriptedChat(["nope", "still nope"]), BUMP, notes, budget_tokens=5000)
+    assert result.claims == []
+    assert any("unparseable" in w for w in result.warnings)
+
+    class Failing(ScriptedChat):
+        def complete(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            raise ProviderError("connection refused")
+
+    failed = extract_claims(Failing([]), BUMP, notes, budget_tokens=5000)
+    assert failed.run.calls == 0
+    assert any("connection refused" in w for w in failed.warnings)
+
+
+def test_fake_provider_on_real_notes_is_labelled(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    result = extract_claims(FakeChat(), BUMP, notes, budget_tokens=300)
+    assert result.run.calls >= 2  # small budget forces several chunks
+    assert result.claims, "the fake provider should find the removal lines"
+    assert all(c.summary.startswith("[fake provider]") for c in result.claims)
+    removed = [c for c in result.claims if c.kind == ClaimKind.REMOVED]
+    assert {tuple(c.parameters) for c in removed} >= {("proxies",), ("app",)}
