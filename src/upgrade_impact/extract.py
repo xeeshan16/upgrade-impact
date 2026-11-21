@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import secrets
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,7 +30,7 @@ from upgrade_impact.models import (
     TokenUsage,
 )
 from upgrade_impact.notes import chunk_notes
-from upgrade_impact.providers.base import ChatModel, Message, ProviderError
+from upgrade_impact.providers.base import ChatModel, Completion, Message, ProviderError
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +174,26 @@ def _mentioned(notes_text: str, symbol: str) -> bool:
     return re.search(rf"(?<![\w$]){re.escape(last)}(?![\w$])", notes_text) is not None
 
 
+# A cut-off reply for a chunk at least this long is retried as two halves.
+MIN_SPLIT_LINES = 6
+
+_PARAMETER_WORDS = r"(?:argument|arg|parameter|param|kwarg|keyword(?: argument)?|option|flag)s?"
+
+
+def _is_parameter(symbol: str, cited_text: str) -> bool:
+    """True when the cited notes call a bare name an argument or option.
+
+    Models often put "app" from "the `app` argument was removed" in ``symbols``;
+    matched as a symbol it would never hit code, and the claim would read as
+    "not used" when every ``Client(app=...)`` call is affected.
+    """
+    if not re.fullmatch(r"[a-z_][a-z0-9_]*", symbol):
+        return False
+    name = re.escape(symbol)
+    pattern = rf"`?\b{name}`?\s+{_PARAMETER_WORDS}\b|\b{name}=|{_PARAMETER_WORDS}\s+`?{name}\b"
+    return re.search(pattern, cited_text, re.I) is not None
+
+
 def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim], int]:
     """Check citations and symbols. Returns the verified claims and how many were dropped."""
     notes_text = "\n".join(line.text for line in notes.lines)
@@ -200,6 +221,14 @@ def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim]
             for p in dict.fromkeys(_clean_symbol(p).lstrip("-") for p in claim.parameters)
             if p and _IDENT.fullmatch(p) and _mentioned(notes_text, p)
         ]
+        cited_text = " ".join(
+            line.text for ev in verified if (line := notes.line(ev.line)) is not None
+        )
+        for symbol in list(symbols):
+            if _is_parameter(symbol, cited_text):
+                symbols.remove(symbol)
+                if symbol not in parameters:
+                    parameters.append(symbol)
         key = (claim.kind.value, tuple(sorted(symbols)), tuple(sorted(ev.line for ev in verified)))
         if key in seen:
             continue
@@ -331,6 +360,29 @@ class Extraction:
     warnings: list[str] = field(default_factory=list)
 
 
+def _complete(
+    chat: ChatModel, messages: list[Message], run: ModelRun, max_output_tokens: int
+) -> Completion | ProviderError:
+    """One extraction call, with its usage added to ``run``."""
+    try:
+        completion = chat.complete(
+            messages,
+            max_tokens=max_output_tokens,
+            temperature=0.0,
+            json_mode=True,
+            json_schema=CLAIMS_SCHEMA,
+        )
+    except ProviderError as exc:
+        return exc
+    run.calls += 1
+    run.usage = run.usage + TokenUsage(
+        input_tokens=completion.usage.input_tokens,
+        output_tokens=completion.usage.output_tokens,
+    )
+    run.latency_s += completion.latency_s
+    return completion
+
+
 def extract_claims(
     chat: ChatModel,
     bump: Bump,
@@ -344,38 +396,40 @@ def extract_claims(
     warnings: list[str] = []
     proposed: list[Claim] = []
     invalid_total = 0
-    for chunk in chunk_notes(notes, budget_tokens):
+    queue = deque(chunk_notes(notes, budget_tokens))
+    while queue:
+        chunk = queue.popleft()
         prompt, _ = build_prompt(bump, notes, chunk)
         messages = [Message("system", SYSTEM_PROMPT), Message("user", prompt)]
         repairs_left = repair_attempts
         nudged = False
         while True:
-            try:
-                completion = chat.complete(
-                    messages,
-                    max_tokens=max_output_tokens,
-                    temperature=0.0,
-                    json_mode=True,
-                    json_schema=CLAIMS_SCHEMA,
-                )
-            except ProviderError as exc:
-                warnings.append(f"model call failed for notes lines {chunk[0]}-{chunk[-1]}: {exc}")
-                break
-            run.calls += 1
-            run.usage = run.usage + TokenUsage(
-                input_tokens=completion.usage.input_tokens,
-                output_tokens=completion.usage.output_tokens,
-            )
-            run.latency_s += completion.latency_s
-            if completion.finish_reason in ("length", "max_tokens"):
+            completion = _complete(chat, messages, run, max_output_tokens)
+            if isinstance(completion, ProviderError):
                 warnings.append(
-                    f"the model reply for notes lines {chunk[0]}-{chunk[-1]} was cut off at "
-                    f"{max_output_tokens} tokens"
+                    f"model call failed for notes lines {chunk[0]}-{chunk[-1]}: {completion}"
                 )
+                break
+            cut_off = completion.finish_reason in ("length", "max_tokens")
             try:
                 reply = parse_reply(completion.text)
             except (ValueError, json.JSONDecodeError) as exc:
+                if cut_off and len(chunk) >= MIN_SPLIT_LINES:
+                    # A reply that ran out of tokens (often a repetition loop) is not
+                    # worth repairing: retry each half of the notes separately.
+                    half = len(chunk) // 2
+                    queue.extendleft([chunk[half:], chunk[:half]])
+                    warnings.append(
+                        f"the model reply for notes lines {chunk[0]}-{chunk[-1]} was cut off "
+                        f"at {max_output_tokens} tokens; retried in two halves"
+                    )
+                    break
                 if repairs_left == 0:
+                    if cut_off:
+                        warnings.append(
+                            f"the model reply for notes lines {chunk[0]}-{chunk[-1]} was cut "
+                            f"off at {max_output_tokens} tokens"
+                        )
                     warnings.append(
                         f"unparseable model reply for notes lines {chunk[0]}-{chunk[-1]}: {exc}"
                     )
@@ -406,6 +460,11 @@ def extract_claims(
                     ),
                 ]
                 continue
+            if cut_off:
+                warnings.append(
+                    f"the model reply for notes lines {chunk[0]}-{chunk[-1]} was cut off at "
+                    f"{max_output_tokens} tokens"
+                )
             proposed.extend(reply.claims)
             invalid_total += reply.invalid
             break

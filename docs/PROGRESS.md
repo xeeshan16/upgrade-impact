@@ -49,3 +49,11 @@ Found while building:
   ("removed", "renamed", "no longer", ...) but that no verified claim cites,
   which turns the verdict into "review". A model that returns nothing can no
   longer produce a confident "no impact".
+- qwen2.5:7b on the same run did find the four httpx 0.28 changes, but put
+  `app`, `proxies`, `verify` and `cert` in `symbols` rather than `parameters`,
+  so nothing matched and fastapi-pagination came out "no impact". A bare
+  lower-case name that the cited line calls an argument, parameter or option
+  (or writes as `name=`) is now treated as a parameter. On govbr_auth's 28
+  lines the 7B model looped until the 2,048-token limit (42 claims dropped,
+  535 s); a cut-off, unparseable reply is now retried as two halves of the
+  notes instead of being "repaired".

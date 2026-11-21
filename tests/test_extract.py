@@ -21,9 +21,10 @@ from upgrade_impact.models import (
     Evidence,
     NotesSection,
     ReleaseNotes,
+    TokenUsage,
 )
 from upgrade_impact.notes import changelog_sections
-from upgrade_impact.providers.base import ProviderError
+from upgrade_impact.providers.base import Completion, ProviderError
 from upgrade_impact.providers.fake import FakeChat, ScriptedChat
 
 BUMP = Bump(
@@ -244,3 +245,74 @@ def test_uncovered_lines_are_the_safety_net(fixtures: Path) -> None:
     remaining = uncovered_lines(notes, [covered])
     assert proxies not in remaining
     assert app in remaining
+
+
+def test_parameters_named_as_symbols_are_moved_by_the_cited_text(fixtures: Path) -> None:
+    """The exact shape qwen2.5:7b returned on the real-model run for httpx 0.28.0."""
+    notes = httpx_notes(fixtures)
+    app = _line_of(notes, "`app` argument")
+    verify = _line_of(notes, "`verify` argument as a string")
+    reply = json.dumps(
+        {
+            "breaking_lines": [app, verify],
+            "claims": [
+                {
+                    "evidence": [
+                        {
+                            "line": app,
+                            "quote": "* The deprecated `app` argument has now been removed.",
+                        }
+                    ],
+                    "summary": "The `app` argument has been removed.",
+                    "kind": "removed",
+                    "symbols": ["app"],
+                    "parameters": [],
+                },
+                {
+                    "evidence": [{"line": verify, "quote": "The `verify` argument as a string"}],
+                    "summary": "verify as a string is deprecated",
+                    "kind": "deprecated",
+                    "symbols": ["verify", "Client"],
+                    "parameters": [],
+                },
+            ],
+        }
+    )
+    result = extract_claims(ScriptedChat([reply]), BUMP, notes, budget_tokens=5000)
+    by_kind = {c.kind: c for c in result.claims}
+    assert (by_kind[ClaimKind.REMOVED].symbols, by_kind[ClaimKind.REMOVED].parameters) == (
+        [],
+        ["app"],
+    )
+    deprecated = by_kind[ClaimKind.DEPRECATED]
+    assert deprecated.parameters == ["verify"]
+    assert "verify" not in deprecated.symbols
+
+
+def test_cut_off_replies_are_retried_in_halves(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+
+    class Looping(ScriptedChat):
+        """Runs out of tokens on long chunks, like qwen2.5:7b did on 28 lines."""
+
+        def complete(self, messages, **kwargs):  # type: ignore[no-untyped-def]
+            self.requests.append(list(messages))
+            lines = [m for m in messages[-1].content.splitlines() if m.startswith("N")]
+            if len(lines) > 8:
+                text = '{"breaking_lines": [1, 2, 3], "claims": [{"evidence": [{"line": 1, "quo'
+                return Completion(
+                    text, "loop", TokenUsage(input_tokens=1, output_tokens=9), 0.0, "length"
+                )
+            return Completion(
+                '{"breaking_lines": [], "claims": []}', "loop", TokenUsage(), 0.0, "stop"
+            )
+
+    chat = Looping([])
+    result = extract_claims(chat, BUMP, notes, budget_tokens=5000)
+    sizes = [
+        len([m for m in r[-1].content.splitlines() if m.startswith("N")]) for r in chat.requests
+    ]
+    assert sizes[0] == len(notes.lines)
+    # Halves are split again until they fit; each line ends up in exactly one answered chunk.
+    assert sum(size for size in sizes if size <= 8) == len(notes.lines)
+    assert any("retried in two halves" in w for w in result.warnings)
