@@ -210,6 +210,10 @@ class BumpReport(BaseModel):
     notes_lines: int = 0
     claims_proposed: int = 0
     claims_dropped: int = 0
+    dropped_claims: list[Claim] = Field(
+        default_factory=list,
+        description="Claims whose quotes were not found near the cited note lines.",
+    )
     results: list[ClaimResult] = Field(default_factory=list)
     uncovered: list[NoteLine] = Field(
         default_factory=list,

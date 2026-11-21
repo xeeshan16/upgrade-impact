@@ -143,21 +143,41 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def verify_quote(notes: ReleaseNotes, line: int, quote: str) -> bool:
-    """True when ``quote`` appears on note line ``line`` (or spans into the next line)."""
+_QUOTE_PREFIX = re.compile(r"^\s*(?:N\d+\s*[:.)-]\s*)?(?:[-*•]\s+)?")
+# How far from the cited line a quote may be found (small models are often off by one).
+NEARBY_LINES = 2
+
+
+def _quote_on_line(notes: ReleaseNotes, line: int, wanted: str) -> bool:
     target = notes.line(line)
     if target is None:
         return False
-    wanted = _normalise(quote)
-    if len(wanted) < 4:
-        return False
-    here = _normalise(target.text)
-    if wanted in here:
+    if wanted in _normalise(target.text):
         return True
     following = notes.line(line + 1)
-    if following is not None and following.version == target.version:
-        return wanted in _normalise(f"{target.text} {following.text}")
-    return False
+    if following is None or following.version != target.version:
+        return False
+    if wanted in _normalise(following.text):
+        return False  # entirely on the next line: that line is the citation
+    return wanted in _normalise(f"{target.text} {following.text}")
+
+
+def locate_quote(notes: ReleaseNotes, line: int, quote: str) -> int | None:
+    """The note line that holds ``quote``: the cited line, else the nearest within
+    ``NEARBY_LINES``. ``None`` when the quote is not there (or too short to prove anything).
+    """
+    wanted = _normalise(_QUOTE_PREFIX.sub("", quote))
+    if len(wanted) < 4:
+        return None
+    for offset in (0, *(d for k in range(1, NEARBY_LINES + 1) for d in (-k, k))):
+        if _quote_on_line(notes, line + offset, wanted):
+            return line + offset
+    return None
+
+
+def verify_quote(notes: ReleaseNotes, line: int, quote: str) -> bool:
+    """True when ``quote`` appears on note line ``line`` (or spans into the next line)."""
+    return locate_quote(notes, line, quote) == line
 
 
 def _clean_symbol(raw: str) -> str:
@@ -194,20 +214,23 @@ def _is_parameter(symbol: str, cited_text: str) -> bool:
     return re.search(pattern, cited_text, re.I) is not None
 
 
-def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim], int]:
-    """Check citations and symbols. Returns the verified claims and how many were dropped."""
+def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim], list[Claim]]:
+    """Check citations and symbols. Returns the verified claims and the dropped ones."""
     notes_text = "\n".join(line.text for line in notes.lines)
     kept: list[Claim] = []
     seen: set[tuple[str, tuple[str, ...], tuple[int, ...]]] = set()
-    dropped = 0
+    dropped: list[Claim] = []
     for claim in claims:
-        evidence = [
-            ev.model_copy(update={"verified": verify_quote(notes, ev.line, ev.quote)})
-            for ev in claim.evidence
-        ]
+        evidence = []
+        for ev in claim.evidence:
+            found = locate_quote(notes, ev.line, ev.quote)
+            # A quote found a line or two away is re-pointed at the line that holds it.
+            evidence.append(
+                ev.model_copy(update={"verified": found is not None, "line": found or ev.line})
+            )
         verified = [ev for ev in evidence if ev.verified]
         if not verified:
-            dropped += 1
+            dropped.append(claim.model_copy(update={"evidence": evidence}))
             continue
         symbols: list[str] = []
         unverified: list[str] = []
@@ -358,6 +381,7 @@ class Extraction:
     dropped: int
     run: ModelRun
     warnings: list[str] = field(default_factory=list)
+    dropped_claims: list[Claim] = field(default_factory=list)
 
 
 def _complete(
@@ -473,12 +497,13 @@ def extract_claims(
         warnings.append(f"{invalid_total} malformed claim(s) in model replies were skipped")
     log.info(
         "extracted claims",
-        extra={"proposed": len(proposed), "verified": len(verified), "dropped": dropped},
+        extra={"proposed": len(proposed), "verified": len(verified), "dropped": len(dropped)},
     )
     return Extraction(
         claims=verified,
         proposed=len(proposed) + invalid_total,
-        dropped=dropped + invalid_total,
+        dropped=len(dropped) + invalid_total,
+        dropped_claims=dropped,
         run=run,
         warnings=warnings,
     )

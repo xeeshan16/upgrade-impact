@@ -194,6 +194,7 @@ def check_bump(
     report.model = extraction.run
     report.claims_proposed = extraction.proposed
     report.claims_dropped = extraction.dropped
+    report.dropped_claims = extraction.dropped_claims
     report.warnings.extend(extraction.warnings)
     report.results = match_claims(extraction.claims, usages, names)
     report.uncovered = [

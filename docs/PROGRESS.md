@@ -57,3 +57,12 @@ Found while building:
   lines the 7B model looped until the 2,048-token limit (42 claims dropped,
   535 s); a cut-off, unparseable reply is now retried as two halves of the
   notes instead of being "repaired".
+- With `breaking_lines` first, qwen2.5:3b now proposes 12 claims per PR
+  ([run 44908293787](https://github.com/xeeshan16/upgrade-impact/actions/runs/44908293787)),
+  but every one was dropped by citation checking, and the safety net listed the
+  `proxies` and `app` lines for review instead of reporting "no impact". The
+  artifacts can't be read from the build sandbox, so dropped claims are now
+  kept in the JSON report and printed by the demo script. Two likely causes
+  are handled: quotes that start with the `N12:` line prefix or a bullet, and
+  citations one or two lines off; a quote found within two lines is re-pointed
+  at the line that actually holds it, so the citation stays exact.

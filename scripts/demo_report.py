@@ -128,6 +128,9 @@ def main() -> int:
             }
         )
         print(text)
+        for claim in bump.dropped_claims:
+            cites = "; ".join(f"N{ev.line} {ev.quote!r}" for ev in claim.evidence) or "no evidence"
+            print(f"dropped: {claim.kind.value}: {claim.summary[:120]} <- {cites[:300]}")
     rows.append("")
     for index, case in enumerate(CASES, start=1):
         rows.append(f"<details><summary>{case.name}: full output</summary>\n")

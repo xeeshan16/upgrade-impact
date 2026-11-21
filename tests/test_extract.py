@@ -7,6 +7,7 @@ from upgrade_impact.extract import (
     CLAIMS_SCHEMA,
     build_prompt,
     extract_claims,
+    locate_quote,
     parse_claims,
     parse_reply,
     uncovered_lines,
@@ -67,6 +68,10 @@ def test_verify_quote(fixtures: Path) -> None:
     assert verify_quote(notes, n, '"proxies" argument has now been removed.')  # markup-insensitive
     assert not verify_quote(notes, n, "the timeout argument was removed")
     assert not verify_quote(notes, n + 1, "proxies argument has now been removed")
+    # A small model's habits: a line prefix in the quote, or citing a neighbouring line.
+    assert locate_quote(notes, n, f"N{n}: * The deprecated `proxies` argument") == n
+    assert locate_quote(notes, n + 1, "proxies argument has now been removed") == n
+    assert locate_quote(notes, n + 5, "proxies argument has now been removed") is None
     assert not verify_quote(notes, 10_000, "anything")
     assert not verify_quote(notes, n, "the")  # too short to prove anything
 
@@ -100,7 +105,7 @@ def test_verify_claims_drops_fabrications_and_splits_symbols(fixtures: Path) -> 
         ),
     ]
     kept, dropped = verify_claims(notes, claims)
-    assert dropped == 1
+    assert [c.summary for c in dropped] == ["invented"]
     assert len(kept) == 1
     claim = kept[0]
     assert claim.id == "C1"
@@ -316,3 +321,18 @@ def test_cut_off_replies_are_retried_in_halves(fixtures: Path) -> None:
     # Halves are split again until they fit; each line ends up in exactly one answered chunk.
     assert sum(size for size in sizes if size <= 8) == len(notes.lines)
     assert any("retried in two halves" in w for w in result.warnings)
+
+
+def test_off_by_one_citations_are_repointed(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    n = _line_of(notes, "`proxies` argument")
+    claim = Claim(
+        id="",
+        kind=ClaimKind.REMOVED,
+        summary="s",
+        parameters=["proxies"],
+        evidence=[Evidence(line=n - 1, quote="The deprecated `proxies` argument has now been")],
+    )
+    [kept], dropped = verify_claims(notes, [claim])
+    assert dropped == []
+    assert kept.evidence[0].line == n
