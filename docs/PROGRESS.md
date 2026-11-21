@@ -77,3 +77,16 @@ Found while building:
   mentions is still dropped. A cited line such as "the deprecated `app`
   argument has now been removed" also supplies the parameter when the model
   left both lists empty.
+- With those fixes, both models produce cited claims
+  ([run 44910332828](https://github.com/xeeshan16/upgrade-impact/actions/runs/44910332828),
+  commit `ee6fc7a`). qwen2.5:7b: four clean claims for httpx 0.28.0 (94.6 s,
+  880 tokens in, 319 out), with `tests/conftest.py:271` as the one "possible"
+  hit and `proxies`, `verify`, `cert` "not used". qwen2.5:3b also finds
+  conftest.py:271 but adds a catch-all claim citing seven lines. On
+  govbr_auth#53 both report the `app` claim as "possible" for its
+  `ASGITransport(app=...)` calls: false alarms that day 2's adjudicator must clear.
+  The README sample now comes from the 7B run.
+
+Next (day 2): tree-sitter indexing for Python and JS/TS, attribute-name
+candidates for method calls, and a model adjudication step that reads each
+"possible" or "needs review" match with its code context and cites both sides.

@@ -13,47 +13,57 @@ each verified by code. If nothing is affected, it says so and tells you why.
 
 ## What it does
 
-`uriyyo/fastapi-pagination#1373` bumped httpx from 0.27.2 to 0.28.0. CI went red,
+`uriyyo/fastapi-pagination#1373` bumped httpx from 0.27.2 to 0.28.0,
 and the maintainer pushed a fix to the same PR (`81a3960`, "Remove usage of
-deprecated app param"). Pointed at the Dependabot commit, before that fix
-(in a clone of the repository, checked out at `e14c865`, reading the bump from
-the commit's `pyproject.toml` diff):
+deprecated app param"). Pointed at the Dependabot commit, before that fix, with
+qwen2.5:7b on Ollama (CPU, no API key):
 
 ```text
-$ git show e14c865 -- pyproject.toml | upgrade-impact check - --provider fake
+$ upgrade-impact check https://github.com/uriyyo/fastapi-pagination/pull/1373 \
+    --ref e14c865aebed311824f192cefe16e9e64a9ade19 --model qwen2.5:7b
 upgrade-impact: httpx 0.27.2 -> 0.28.0 (pypi)
-release notes: 0.28.0 from changelog (17 lines)
+release notes: 0.28.0 from github-release (17 lines)
 code: 2 usage(s) of httpx in 1 file(s); 100 Python file(s) scanned
 REVIEW: possible impact; read the matched lines
-8 breaking change(s): 0 affected, 1 possible, 4 need review, 3 not used by your code
+4 breaking change(s): 0 affected, 1 possible, 0 need review, 3 not used by your code
 
-[possible] C8 removed: [fake provider] The deprecated `app` argument has now been removed.
-  notes N11 (0.28.0): "The deprecated `app` argument has now been removed."
+[possible] C4 removed: The `app` argument has been removed.
+  notes N11 (0.28.0): "* The deprecated `app` argument has now been removed."
   symbols: app=
   tests/conftest.py:271  async with LifespanManager(app), AsyncClient(app=app, base_url="http://testserver", timeout=60) as c:  (passes app to httpx.AsyncClient; the notes do not say which API lost it)
 
-...
-[not_found] C7 removed: [fake provider] The deprecated `proxies` argument has now been removed.
-  notes N10 (0.28.0): "The deprecated `proxies` argument has now been removed."
+[not_found] C1 deprecated: The `verify` argument as a string is deprecated and will raise warnings.
+  notes N6 (0.28.0): "* The `verify` argument as a string argument is now deprecated and will raise warnings."
+  symbols: verify=
+
+[not_found] C2 deprecated: The `cert` argument is deprecated and will raise warnings.
+  notes N7 (0.28.0): "* The `cert` argument is now deprecated and will raise warnings."
+  symbols: cert=
+
+[not_found] C3 removed: The `proxies` argument has been removed.
+  notes N10 (0.28.0): "* The deprecated `proxies` argument has now been removed."
   symbols: proxies=
+
+model: ollama qwen2.5:7b, 1 call(s), 880 in / 319 out tokens, 94.6 s
+
+note: analysed uriyyo/fastapi-pagination at e14c865aebed (downloaded source files)
 ```
 
-That is the line the maintainer changed. It is "possible" rather than
-"affected" because the notes don't say which API lost `app`, and httpx also has
-`ASGITransport(app=...)`, the replacement; deciding that from the code context
-is the model adjudication step planned for day 2. **This sample was produced with the
-deterministic fake provider** (a keyword heuristic used for tests and CI); it
-shows the pipeline, not model quality. The same check straight from the PR URL
-is `upgrade-impact check https://github.com/uriyyo/fastapi-pagination/pull/1373
---ref e14c865aebed311824f192cefe16e9e64a9ade19`, which CI runs on every push.
-Real-model output is recorded by the [`real-model` workflow](.github/workflows/real-model.yml)
-(Ollama on a CI runner) and will replace this sample. To record one yourself:
+`tests/conftest.py:271` is the line the maintainer changed. Every claim quotes the
+release-note line it comes from, and the quotes were checked against the notes.
+The `proxies`, `verify` and `cert` changes are "not used": no call passes those
+arguments. The `app` line is "possible" rather than "affected" because the notes
+don't say which API lost `app`, and httpx also has `ASGITransport(app=...)`, which
+is the replacement; deciding that from the code is the adjudication step planned
+for day 2.
 
-```bash
-ollama pull qwen2.5:7b
-upgrade-impact check https://github.com/uriyyo/fastapi-pagination/pull/1373 \
-  --ref e14c865aebed311824f192cefe16e9e64a9ade19
-```
+This output is from the [`real-model` workflow](.github/workflows/real-model.yml)
+([run 44910332828](https://github.com/xeeshan16/upgrade-impact/actions/runs/44910332828),
+commit `ee6fc7a`). On the second demo PR (`cereja-project/govbr_auth#53`, httpx 0.27
+to 0.28.1, merged with manifest changes only) the same model reports 36 "possible"
+matches for the `app` claim; the eight it prints are all `httpx.ASGITransport(app=...)`
+calls. Those are false alarms, and clearing them is the day 2 adjudicator's job. These are two hand-picked PRs, not an evaluation; the
+labelled dataset and baselines come on day 3.
 
 ## Quick start (5 minutes)
 
