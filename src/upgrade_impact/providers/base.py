@@ -1,0 +1,64 @@
+"""Provider interface for chat models.
+
+Everything above this layer depends only on these protocols, so adding a
+provider means adding one class and one branch in :mod:`.factory`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Literal, Protocol, runtime_checkable
+
+from upgrade_impact.models import TokenUsage
+
+Role = Literal["system", "user", "assistant"]
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    role: Role
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class Completion:
+    text: str
+    model: str
+    usage: TokenUsage
+    latency_s: float
+    finish_reason: str | None = None
+
+
+class ProviderError(RuntimeError):
+    """A provider call failed after retries, or the provider is misconfigured."""
+
+    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.status = status
+        self.retryable = retryable
+
+
+@runtime_checkable
+class ChatModel(Protocol):
+    """A chat-completion model. Implementations must be safe to call from one thread at a time."""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+        json_mode: bool = False,
+        json_schema: Mapping[str, Any] | None = None,
+    ) -> Completion:
+        """Send ``messages``. ``json_mode`` asks for a JSON object; ``json_schema``
+        (a JSON Schema for that object) asks for constrained decoding where the
+        provider supports it and is otherwise only a hint."""
+        ...
