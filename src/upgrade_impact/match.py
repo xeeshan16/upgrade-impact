@@ -8,6 +8,9 @@ Strengths:
   how (behaviour changes, calls that forward ``**kwargs``, references);
 - ``import``: the claim names no symbol, so every import site is a candidate.
 
+A parameter claim that names no API ("the `app` argument was removed") only
+gives ``symbol`` matches: many APIs share parameter names.
+
 A claim about a parameter is *not* matched by calls that visibly don't pass it:
 ``httpx.AsyncClient(timeout=10)`` is not affected by "the proxies argument was
 removed". That is what lets the tool say "no impact" with a reason.
@@ -79,6 +82,15 @@ def _match_usage(claim: Claim, usage: Usage, import_names: list[str]) -> Match |
             passed = params.intersection(usage.keywords)
             if passed:
                 names = ", ".join(sorted(passed))
+                if symbol_hit is None:
+                    # The notes name the parameter but not the API it belonged to, and
+                    # many APIs share parameter names (Client(app=) vs ASGITransport(app=)).
+                    return Match(
+                        usage=usage,
+                        strength=MatchStrength.SYMBOL,
+                        reason=f"passes {names} to {usage.symbol}; the notes do not say "
+                        "which API lost it",
+                    )
                 return Match(usage=usage, strength=MatchStrength.DIRECT, reason=f"passes {names}")
             if "**" in usage.keywords:
                 return Match(

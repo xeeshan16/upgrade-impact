@@ -53,15 +53,15 @@ CASES = [
 ]
 
 
-def _direct_hits(report: Report) -> list[tuple[str, int]]:
+def _hits(report: Report, strengths: set[MatchStrength]) -> list[tuple[str, int]]:
     return sorted(
         {
             (m.usage.path, m.usage.line)
             for bump in report.bumps
             for result in bump.results
-            if result.status == ClaimStatus.AFFECTED
+            if result.status in (ClaimStatus.AFFECTED, ClaimStatus.POSSIBLE)
             for m in result.matches
-            if m.strength == MatchStrength.DIRECT
+            if m.strength in strengths
         }
     )
 
@@ -81,9 +81,9 @@ def main() -> int:
     rows = [
         f"## upgrade-impact on real Dependabot PRs ({chat.provider} `{chat.model}`)",
         "",
-        "| PR | verdict | direct hits | expected (human fix) | found | claims (dropped) "
-        "| model time | tokens in/out |",
-        "|---|---|---|---|---|---|---|---|",
+        "| PR | verdict | affected lines | possible lines | expected (human fix) | found "
+        "| claims (dropped) | model time | tokens in/out |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     summary = []
     for index, case in enumerate(CASES, start=1):
@@ -98,17 +98,20 @@ def main() -> int:
         text = render_text(report)
         (args.out / f"case-{index}.txt").write_text(text, encoding="utf-8")
         (args.out / f"case-{index}.json").write_text(report.model_dump_json(indent=2))
-        hits = _direct_hits(report)
-        found = all(e in hits for e in case.expected) if case.expected else not hits
+        direct = _hits(report, {MatchStrength.DIRECT})
+        hits = _hits(report, {MatchStrength.DIRECT, MatchStrength.SYMBOL})
+        possible = [h for h in hits if h not in direct]
+        found = all(e in hits for e in case.expected) if case.expected else not direct
         [bump] = report.bumps
         run = bump.model
         tokens = f"{run.usage.input_tokens:,}/{run.usage.output_tokens:,}" if run else "-"
         expected = ", ".join(f"`{p}:{n}`" for p, n in case.expected) or "none"
-        shown = ", ".join(f"`{p}:{n}`" for p, n in hits) or "none"
+        shown = ", ".join(f"`{p}:{n}`" for p, n in direct) or "none"
+        maybe = ", ".join(f"`{p}:{n}`" for p, n in possible[:6]) or "none"
         claims = f"{len(bump.results)} ({bump.claims_dropped})" if run else "-"
         latency = f"{run.latency_s:.0f} s" if run else f"{elapsed:.0f} s"
         rows.append(
-            f"| [{case.name}]({case.pr}) | {bump.verdict} | {shown} | {expected} | "
+            f"| [{case.name}]({case.pr}) | {bump.verdict} | {shown} | {maybe} | {expected} | "
             f"{'yes' if found else 'no'} | {claims} | {latency} | {tokens} |"
         )
         summary.append(
@@ -117,7 +120,8 @@ def main() -> int:
                 "pr": case.pr,
                 "ref": case.ref,
                 "verdict": bump.verdict,
-                "direct_hits": hits,
+                "affected_lines": direct,
+                "possible_lines": possible,
                 "expected": case.expected,
                 "found": found,
                 "label": case.label,

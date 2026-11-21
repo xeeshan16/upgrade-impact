@@ -63,7 +63,8 @@ def test_check_a_pr_url_end_to_end(services: Services, capsys: pytest.CaptureFix
     assert bump["model"]["provider"] == "fake"
     by_params = {tuple(r["claim"]["parameters"]): r for r in bump["results"]}
     proxies = by_params[("proxies",)]
-    assert proxies["status"] == "affected"
+    # The notes name the parameter but not the API, so the match is "possible".
+    assert proxies["status"] == "possible"
     assert next((m["usage"]["path"], m["usage"]["line"]) for m in proxies["matches"]) == (
         "app/http.py",
         9,
@@ -81,9 +82,10 @@ def test_text_and_markdown_output(services: Services, capsys: pytest.CaptureFixt
     )
     assert code == 0
     assert out.startswith("upgrade-impact: httpx 0.27.0 -> 0.28.1 (pypi)\n")
-    assert "AFFECTED" in out
+    assert "REVIEW: possible impact" in out
     assert (
-        "app/http.py:9  return httpx.Client(proxies=proxy_url, timeout=10)  (passes proxies)" in out
+        "app/http.py:9  return httpx.Client(proxies=proxy_url, timeout=10)  (passes proxies "
+        "to httpx.Client; the notes do not say which API lost it)" in out
     )
     assert "fake provider: heuristic stand-in, not a model" in out
 

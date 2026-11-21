@@ -30,3 +30,11 @@ Found while building:
   PR *head* can hide the impact (the fix is already there), hence `--ref`.
 - The GitHub API and codeload are not reachable from the build sandbox, so PR
   fetching and tarball download are tested with mocked HTTP locally and live in CI.
+- The first CI smoke run on a second real PR (`cereja-project/govbr_auth#53`)
+  reported `httpx.ASGITransport(app=...)` as *affected* by "the deprecated `app`
+  argument has now been removed". That call is the replacement, not the
+  problem. The notes name the parameter but not the API, and parameter names
+  repeat across APIs, so a parameter-only claim now gives "possible" matches
+  with that reason; only a claim with a verified symbol can be "affected".
+  Telling `AsyncClient(app=)` from `ASGITransport(app=)` is the day 2
+  adjudicator's job.

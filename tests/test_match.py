@@ -72,6 +72,19 @@ def test_parameter_claims_need_the_keyword(sample_repo: Path) -> None:
     assert [m.usage.line for m in app.matches] == [13]
 
 
+def test_parameter_claims_without_an_api_are_only_possible(sample_repo: Path) -> None:
+    usages = index_repository(sample_repo, ["httpx"]).usages
+    [result] = match_claims([claim(ClaimKind.REMOVED, [], ["timeout"])], usages, ["httpx"])
+    assert result.status == ClaimStatus.POSSIBLE
+    passing = [m for m in result.matches if "passes timeout" in m.reason]
+    assert {(m.usage.symbol, m.usage.line) for m in passing} == {
+        ("httpx.Client", 9),
+        ("httpx.get", 23),
+    }
+    assert all(m.strength == MatchStrength.SYMBOL for m in result.matches)
+    assert "do not say which API" in passing[0].reason
+
+
 def test_symbol_claims_by_kind(sample_repo: Path) -> None:
     usages = index_repository(sample_repo, ["httpx"]).usages
     removed, behaviour, unused = match_claims(

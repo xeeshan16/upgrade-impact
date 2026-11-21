@@ -90,10 +90,12 @@ jobs:
           [bump] = report["bumps"]
           assert bump["bump"]["package"] == "httpx", bump["bump"]
           assert "0.28.0" in bump["notes_versions"], bump["notes_versions"]
+          # The notes say "the deprecated `app` argument has now been removed" without
+          # naming the API, so without adjudication the call is a "possible" match.
           hits = [
               (m["usage"]["path"], m["usage"]["line"])
-              for r in bump["results"] if r["status"] == "affected"
-              for m in r["matches"] if m["strength"] == "direct"
+              for r in bump["results"] if r["status"] in ("affected", "possible")
+              for m in r["matches"] if m["strength"] in ("direct", "symbol")
           ]
           assert ("tests/conftest.py", 271) in hits, hits
           print("ok:", hits)

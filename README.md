@@ -24,20 +24,24 @@ $ git show e14c865 -- pyproject.toml | upgrade-impact check - --provider fake
 upgrade-impact: httpx 0.27.2 -> 0.28.0 (pypi)
 release notes: 0.28.0 from changelog (17 lines)
 code: 2 usage(s) of httpx in 1 file(s); 100 Python file(s) scanned
-AFFECTED: at least one breaking change reaches your code
-8 breaking change(s): 1 affected, 0 possible, 4 need review, 3 not used by your code
+REVIEW: possible impact; read the matched lines
+8 breaking change(s): 0 affected, 1 possible, 4 need review, 3 not used by your code
 
-[affected] C8 removed: [fake provider] The deprecated `app` argument has now been removed.
+[possible] C8 removed: [fake provider] The deprecated `app` argument has now been removed.
   notes N11 (0.28.0): "The deprecated `app` argument has now been removed."
   symbols: app=
-  tests/conftest.py:271  async with LifespanManager(app), AsyncClient(app=app, base_url="http://testserver", timeout=60) as c:  (passes app)
+  tests/conftest.py:271  async with LifespanManager(app), AsyncClient(app=app, base_url="http://testserver", timeout=60) as c:  (passes app to httpx.AsyncClient; the notes do not say which API lost it)
+
 ...
 [not_found] C7 removed: [fake provider] The deprecated `proxies` argument has now been removed.
   notes N10 (0.28.0): "The deprecated `proxies` argument has now been removed."
   symbols: proxies=
 ```
 
-That is the line the maintainer changed. **This sample was produced with the
+That is the line the maintainer changed. It is "possible" rather than
+"affected" because the notes don't say which API lost `app`, and httpx also has
+`ASGITransport(app=...)`, the replacement; deciding that from the code context
+is the model adjudication step planned for day 2. **This sample was produced with the
 deterministic fake provider** (a keyword heuristic used for tests and CI); it
 shows the pipeline, not model quality. The same check straight from the PR URL
 is `upgrade-impact check https://github.com/uriyyo/fastapi-pagination/pull/1373
