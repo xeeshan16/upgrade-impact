@@ -75,6 +75,7 @@ CLAIMS_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "evidence": {
                         "type": "array",
+                        "minItems": 1,
                         "items": {
                             "type": "object",
                             "properties": {
@@ -200,6 +201,9 @@ MIN_SPLIT_LINES = 6
 _PARAMETER_WORDS = r"(?:argument|arg|parameter|param|kwarg|keyword(?: argument)?|option|flag)s?"
 
 
+_NAMED_PARAMETER = re.compile(rf"`([a-z_][a-z0-9_]*)=?`\s+{_PARAMETER_WORDS}\b", re.I)
+
+
 def _is_parameter(symbol: str, cited_text: str) -> bool:
     """True when the cited notes call a bare name an argument or option.
 
@@ -252,6 +256,10 @@ def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim]
                 symbols.remove(symbol)
                 if symbol not in parameters:
                     parameters.append(symbol)
+        if not symbols and not parameters:
+            # "The deprecated `app` argument has now been removed." names its target
+            # even when the model left symbols and parameters empty.
+            parameters = list(dict.fromkeys(_NAMED_PARAMETER.findall(cited_text)))
         key = (claim.kind.value, tuple(sorted(symbols)), tuple(sorted(ev.line for ev in verified)))
         if key in seen:
             continue
@@ -364,6 +372,49 @@ def parse_reply(text: str) -> Reply:
         if n is not None
     ]
     return Reply(claims=claims, invalid=invalid, breaking_lines=flagged)
+
+
+def _names(claim: Claim) -> list[str]:
+    names = [*claim.symbols, *claim.parameters]
+    return [p for n in names if (p := re.split(r"[.:#/(]", _clean_symbol(n))[-1])]
+
+
+def attach_flagged_evidence(
+    notes: ReleaseNotes, claims: list[Claim], flagged: list[int]
+) -> list[Claim]:
+    """Give evidence-less claims a citation from the lines the model flagged.
+
+    qwen2.5:7b returned claims with an empty evidence list but a correct
+    ``breaking_lines``. A flagged line that names the claim's symbol or
+    parameter (or contains its summary verbatim) becomes the citation, marked
+    ``inferred``; claims that match no flagged line stay without evidence and
+    are dropped by verification.
+    """
+    out: list[Claim] = []
+    for claim in claims:
+        if claim.evidence:
+            out.append(claim)
+            continue
+        summary = _normalise(claim.summary)
+        hits: list[int] = []
+        for n in flagged:
+            line = notes.line(n)
+            if line is None:
+                continue
+            text = _normalise(line.text)
+            if any(
+                re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", text)
+                for name in _names(claim)
+            ) or (len(summary) >= 12 and summary in text):
+                hits.append(n)
+        evidence = [
+            Evidence(
+                line=n, quote=_QUOTE_PREFIX.sub("", notes.lines[n - 1].text).strip(), inferred=True
+            )
+            for n in hits[:3]
+        ]
+        out.append(claim.model_copy(update={"evidence": evidence}))
+    return out
 
 
 def uncovered_lines(notes: ReleaseNotes, claims: list[Claim]) -> list[int]:
@@ -489,7 +540,7 @@ def extract_claims(
                     f"the model reply for notes lines {chunk[0]}-{chunk[-1]} was cut off at "
                     f"{max_output_tokens} tokens"
                 )
-            proposed.extend(reply.claims)
+            proposed.extend(attach_flagged_evidence(notes, reply.claims, flagged))
             invalid_total += reply.invalid
             break
     verified, dropped = verify_claims(notes, proposed)

@@ -66,3 +66,14 @@ Found while building:
   are handled: quotes that start with the `N12:` line prefix or a bullet, and
   citations one or two lines off; a quote found within two lines is re-pointed
   at the line that actually holds it, so the citation stays exact.
+- Printing the dropped claims showed why
+  ([run 44909317658](https://github.com/xeeshan16/upgrade-impact/actions/runs/44909317658)):
+  qwen2.5:7b returned the four correct httpx 0.28 claims, with summaries close
+  to verbatim, but every `evidence` list was empty, while `breaking_lines`
+  pointed at the right lines. The schema now requires at least one evidence
+  item, and a claim that still arrives without evidence is cited to a flagged
+  line that names its symbol or parameter (or contains its summary verbatim),
+  marked as inferred in the report. A claim that names nothing a flagged line
+  mentions is still dropped. A cited line such as "the deprecated `app`
+  argument has now been removed" also supplies the parameter when the model
+  left both lists empty.

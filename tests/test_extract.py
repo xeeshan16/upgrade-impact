@@ -336,3 +336,48 @@ def test_off_by_one_citations_are_repointed(fixtures: Path) -> None:
     [kept], dropped = verify_claims(notes, [claim])
     assert dropped == []
     assert kept.evidence[0].line == n
+
+
+def test_evidence_less_claims_cite_the_flagged_line_that_names_them(fixtures: Path) -> None:
+    """qwen2.5:7b (real-model run 44909317658) flagged the right lines but sent
+    every claim with an empty evidence list."""
+    notes = httpx_notes(fixtures)
+    proxies = _line_of(notes, "`proxies` argument")
+    app = _line_of(notes, "`app` argument")
+    reply = json.dumps(
+        {
+            "breaking_lines": [proxies, app],
+            "claims": [
+                {
+                    "evidence": [],
+                    "summary": "The `proxies` argument has been removed.",
+                    "kind": "removed",
+                    "symbols": [],
+                    "parameters": ["proxies"],
+                },
+                {
+                    "evidence": [],
+                    "summary": "The deprecated `app` argument has now been removed.",
+                    "kind": "removed",
+                    "symbols": [],
+                    "parameters": [],
+                },
+                {
+                    "evidence": [],
+                    "summary": "Something about streaming.",
+                    "kind": "behavior_changed",
+                    "symbols": ["stream"],
+                    "parameters": [],
+                },
+            ],
+        }
+    )
+    result = extract_claims(ScriptedChat([reply]), BUMP, notes, budget_tokens=5000)
+    lines = {c.summary: [(ev.line, ev.inferred) for ev in c.evidence] for c in result.claims}
+    assert lines == {
+        "The `proxies` argument has been removed.": [(proxies, True)],
+        "The deprecated `app` argument has now been removed.": [(app, True)],
+    }
+    assert result.dropped == 1  # the streaming claim names nothing a flagged line mentions
+    app_claim = next(c for c in result.claims if c.evidence[0].line == app)
+    assert app_claim.parameters == ["app"]  # the cited line calls it an argument

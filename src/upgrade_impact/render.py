@@ -14,9 +14,14 @@ _VERDICT_TEXT = {
 }
 
 
-def _quote(result: ClaimResult) -> list[tuple[int, str, str | None]]:
+_INFERRED = " (cited line flagged by the model; it gave no quote)"
+
+
+def _quote(result: ClaimResult) -> list[tuple[int, str, str | None, str]]:
     return [
-        (ev.line, ev.quote, result.claim.version) for ev in result.claim.evidence if ev.verified
+        (ev.line, ev.quote, result.claim.version, _INFERRED if ev.inferred else "")
+        for ev in result.claim.evidence
+        if ev.verified
     ]
 
 
@@ -58,7 +63,9 @@ def _model_line(report: BumpReport) -> str | None:
 def _text_result(result: ClaimResult) -> list[str]:
     claim = result.claim
     out = ["", f"[{result.status.value}] {claim.id} {claim.kind.value}: {claim.summary}"]
-    out.extend(f'  notes N{n} ({version}): "{quote}"' for n, quote, version in _quote(result))
+    out.extend(
+        f'  notes N{n} ({version}): "{quote}"{note}' for n, quote, version, note in _quote(result)
+    )
     if claim.symbols or claim.parameters:
         names = ", ".join([*claim.symbols, *(f"{p}=" for p in claim.parameters)])
         out.append(f"  symbols: {names}")
@@ -151,7 +158,7 @@ def render_markdown(report: Report) -> str:
             out.append("|---|---|---|---|")
             for result in bump_report.results:
                 claim = result.claim
-                cites = "<br>".join(f"N{line}: “{quote}”" for line, quote, _ in _quote(result))
+                cites = "<br>".join(f"N{line}: “{quote}”" for line, quote, _, _ in _quote(result))
                 code = (
                     _imports_summary(result)
                     if _imports_only(result)

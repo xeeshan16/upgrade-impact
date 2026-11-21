@@ -107,6 +107,11 @@ class Evidence(BaseModel):
     line: int
     quote: str
     verified: bool = False
+    inferred: bool = Field(
+        default=False,
+        description="The model gave no evidence; this is a line it flagged that names "
+        "the claim's symbol or parameter.",
+    )
 
 
 class Claim(BaseModel):
