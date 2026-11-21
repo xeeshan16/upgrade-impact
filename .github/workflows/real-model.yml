@@ -1,0 +1,65 @@
+name: real-model
+
+# Runs upgrade-impact on real Dependabot PRs with a real local model (Ollama on
+# the runner's CPU). Its reports are the source of the sample output in the
+# README. Not a required check: model downloads and CPU inference are slow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Ollama models (JSON list)
+        default: '["qwen2.5:3b", "qwen2.5:7b"]'
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-model-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ollama:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(inputs.models || '["qwen2.5:3b", "qwen2.5:7b"]') }}
+    env:
+      MODEL: ${{ matrix.model }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPGRADE_IMPACT_PROVIDER: ollama
+      UPGRADE_IMPACT_TIMEOUT_S: "1200"
+      UPGRADE_IMPACT_MAX_RETRIES: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          if ! curl -sf http://localhost:11434/api/tags > /dev/null; then
+            nohup ollama serve > /tmp/ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 60); do curl -sf http://localhost:11434/api/tags > /dev/null && break; sleep 1; done
+          ollama --version
+      - run: ollama pull "$MODEL"
+      - name: real demo PRs
+        run: |
+          uv run python scripts/demo_report.py --model "$MODEL" --out "reports/${MODEL//:/-}"
+          cat "reports/${MODEL//:/-}/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-model-${{ strategy.job-index }}
+          path: reports/
