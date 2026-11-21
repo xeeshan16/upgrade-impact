@@ -45,7 +45,8 @@ or change how that code behaves:
 Do not list additive features, bug fixes that restore documented behaviour, \
 performance work, documentation, CI or packaging-internal changes.
 
-For each change give:
+First, in breaking_lines, list the number of every note line that describes such a \
+change (N12 is 12). Then give one claim per change. For each claim give:
 - evidence: the note line number(s) it comes from, each with a short quote copied \
 character for character from that line;
 - summary: one sentence in your own words;
@@ -63,6 +64,7 @@ contain no breaking or behaviour-changing changes, return an empty list."""
 CLAIMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "breaking_lines": {"type": "array", "items": {"type": "integer"}},
         "claims": {
             "type": "array",
             "items": {
@@ -88,11 +90,21 @@ CLAIMS_SCHEMA: dict[str, Any] = {
                 "required": ["evidence", "summary", "kind", "symbols", "parameters"],
                 "additionalProperties": False,
             },
-        }
+        },
     },
-    "required": ["claims"],
+    "required": ["breaking_lines", "claims"],
     "additionalProperties": False,
 }
+
+# Note lines that read like a breaking change. Used as a deterministic safety net:
+# such lines that no verified claim cites are reported, so a model that returns
+# nothing cannot turn into a confident "no impact".
+BREAKING_HINT = re.compile(
+    r"\b(removed?|removal|renamed?|no longer|breaking|incompatible|dropped|drop(?:s|ped)? "
+    r"support|now (?:raises|requires|returns|defaults)|is now required|must now|"
+    r"(?:has|have) been (?:removed|renamed|replaced)|replaced by|instead of)\b",
+    re.I,
+)
 
 _FENCE_CHARS = re.compile(r"[`*_~>#\[\]()\"'“”‘’]")  # noqa: RUF001 - curly quotes are intended
 _IDENT = re.compile(r"[A-Za-z_][\w$]*")
@@ -117,8 +129,8 @@ def build_prompt(bump: Bump, notes: ReleaseNotes, line_numbers: Sequence[int]) -
     out.append(f"<<<END NOTES {nonce}>>>")
     out.append("")
     out.append(
-        'Answer with a JSON object {"claims": [...]}. Cite line numbers as integers '
-        "(N12 is line 12)."
+        'Answer with a JSON object {"breaking_lines": [...], "claims": [...]}. Cite line '
+        "numbers as integers (N12 is line 12)."
     )
     return "\n".join(out), nonce
 
@@ -231,11 +243,24 @@ def _line_number(value: Any) -> int | None:
     return None
 
 
+@dataclass(slots=True)
+class Reply:
+    claims: list[Claim]
+    invalid: int
+    breaking_lines: list[int]
+
+
 def parse_claims(text: str) -> tuple[list[Claim], int]:
     """Claims from a model reply. Raises ``ValueError`` when the reply is not JSON at all.
 
     Individually malformed claims are skipped and counted, not fatal.
     """
+    reply = parse_reply(text)
+    return reply.claims, reply.invalid
+
+
+def parse_reply(text: str) -> Reply:
+    """The whole reply: claims, malformed-claim count and the lines the model flagged."""
     data = _json_object(text)
     if isinstance(data, list):
         data = {"claims": data}
@@ -278,7 +303,21 @@ def parse_claims(text: str) -> tuple[list[Claim], int]:
             )
         except (ValidationError, TypeError):
             invalid += 1
-    return claims, invalid
+    raw_lines = data.get("breaking_lines")
+    flagged = [
+        n
+        for n in (_line_number(v) for v in (raw_lines if isinstance(raw_lines, list) else []))
+        if n is not None
+    ]
+    return Reply(claims=claims, invalid=invalid, breaking_lines=flagged)
+
+
+def uncovered_lines(notes: ReleaseNotes, claims: list[Claim]) -> list[int]:
+    """Note lines that look breaking but that no verified claim cites."""
+    cited = {ev.line for claim in claims for ev in claim.evidence if ev.verified}
+    return [
+        line.n for line in notes.lines if line.n not in cited and BREAKING_HINT.search(line.text)
+    ]
 
 
 @dataclass(slots=True)
@@ -306,7 +345,9 @@ def extract_claims(
     for chunk in chunk_notes(notes, budget_tokens):
         prompt, _ = build_prompt(bump, notes, chunk)
         messages = [Message("system", SYSTEM_PROMPT), Message("user", prompt)]
-        for attempt in range(repair_attempts + 1):
+        repairs_left = repair_attempts
+        nudged = False
+        while True:
             try:
                 completion = chat.complete(
                     messages,
@@ -330,25 +371,41 @@ def extract_claims(
                     f"{max_output_tokens} tokens"
                 )
             try:
-                claims, invalid = parse_claims(completion.text)
+                reply = parse_reply(completion.text)
             except (ValueError, json.JSONDecodeError) as exc:
-                if attempt == repair_attempts:
+                if repairs_left == 0:
                     warnings.append(
                         f"unparseable model reply for notes lines {chunk[0]}-{chunk[-1]}: {exc}"
                     )
                     break
+                repairs_left -= 1
                 messages = [
                     *messages,
                     Message("assistant", completion.text[:4000]),
                     Message(
                         "user",
                         f"That was not valid JSON ({exc}). Reply again with only the JSON "
-                        'object {"claims": [...]}.',
+                        'object {"breaking_lines": [...], "claims": [...]}.',
                     ),
                 ]
                 continue
-            proposed.extend(claims)
-            invalid_total += invalid
+            flagged = sorted(set(reply.breaking_lines) & set(chunk))
+            if not reply.claims and flagged and not nudged:
+                # Small models often flag lines and then stop. Ask once for the claims.
+                nudged = True
+                listed = ", ".join(f"N{n}" for n in flagged)
+                messages = [
+                    *messages,
+                    Message("assistant", completion.text[:4000]),
+                    Message(
+                        "user",
+                        f"You listed {listed} as breaking changes but returned no claims. "
+                        "Return one claim for each of those lines, with evidence quoting it.",
+                    ),
+                ]
+                continue
+            proposed.extend(reply.claims)
+            invalid_total += reply.invalid
             break
     verified, dropped = verify_claims(notes, proposed)
     if invalid_total:

@@ -211,6 +211,10 @@ class BumpReport(BaseModel):
     claims_proposed: int = 0
     claims_dropped: int = 0
     results: list[ClaimResult] = Field(default_factory=list)
+    uncovered: list[NoteLine] = Field(
+        default_factory=list,
+        description="Note lines that read like a breaking change but no verified claim cites.",
+    )
     index: IndexStats = Field(default_factory=IndexStats)
     model: ModelRun | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -222,7 +226,11 @@ class BumpReport(BaseModel):
     def verdict(self) -> str:
         if self.count(ClaimStatus.AFFECTED):
             return "affected"
-        if self.count(ClaimStatus.POSSIBLE) or self.count(ClaimStatus.NEEDS_REVIEW):
+        if (
+            self.count(ClaimStatus.POSSIBLE)
+            or self.count(ClaimStatus.NEEDS_REVIEW)
+            or self.uncovered
+        ):
             return "review"
         if not self.notes_lines:
             return "unknown"

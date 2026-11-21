@@ -55,56 +55,78 @@ def _model_line(report: BumpReport) -> str | None:
     )
 
 
+def _text_result(result: ClaimResult) -> list[str]:
+    claim = result.claim
+    out = ["", f"[{result.status.value}] {claim.id} {claim.kind.value}: {claim.summary}"]
+    out.extend(f'  notes N{n} ({version}): "{quote}"' for n, quote, version in _quote(result))
+    if claim.symbols or claim.parameters:
+        names = ", ".join([*claim.symbols, *(f"{p}=" for p in claim.parameters)])
+        out.append(f"  symbols: {names}")
+    if _imports_only(result):
+        out.append(f"  {_imports_summary(result)}")
+        return out
+    for match in result.matches[:MAX_MATCHES_SHOWN]:
+        usage = match.usage
+        out.append(f"  {usage.path}:{usage.line}  {usage.snippet}  ({match.reason})")
+    if len(result.matches) > MAX_MATCHES_SHOWN:
+        out.append(f"  ... and {len(result.matches) - MAX_MATCHES_SHOWN} more")
+    return out
+
+
+def _text_uncovered(report: BumpReport) -> list[str]:
+    if not report.uncovered:
+        return []
+    out = [
+        "",
+        f"[unclaimed] {len(report.uncovered)} note line(s) read like breaking changes, "
+        "but no verified claim cites them; check these by hand:",
+    ]
+    out.extend(
+        f"  N{note.n} ({note.version}): {note.text.strip()}"
+        for note in report.uncovered[:MAX_MATCHES_SHOWN]
+    )
+    if len(report.uncovered) > MAX_MATCHES_SHOWN:
+        out.append(f"  ... and {len(report.uncovered) - MAX_MATCHES_SHOWN} more")
+    return out
+
+
+def _text_header(report: BumpReport) -> list[str]:
+    bump = report.bump
+    notes = (
+        f"release notes: {', '.join(report.notes_versions)} "
+        f"from {', '.join(report.notes_sources)} ({report.notes_lines} lines)"
+        if report.notes_lines
+        else "release notes: none found"
+    )
+    idx = report.index
+    out = [
+        f"upgrade-impact: {bump.label}",
+        notes,
+        f"code: {idx.usages} usage(s) of {', '.join(idx.import_names) or bump.package} "
+        f"in {idx.files_importing} file(s); {idx.files_scanned} Python file(s) scanned",
+        _VERDICT_TEXT[report.verdict],
+        _headline(report),
+    ]
+    if report.claims_dropped:
+        out.append(
+            f"({report.claims_dropped} claim(s) dropped: their quotes were not found in the notes)"
+        )
+    return out
+
+
 def render_text(report: Report) -> str:
     out: list[str] = []
     for bump_report in report.bumps:
-        bump = bump_report.bump
-        out.append(f"upgrade-impact: {bump.label}")
-        notes = (
-            f"release notes: {', '.join(bump_report.notes_versions)} "
-            f"from {', '.join(bump_report.notes_sources)} ({bump_report.notes_lines} lines)"
-            if bump_report.notes_lines
-            else "release notes: none found"
-        )
-        out.append(notes)
-        idx = bump_report.index
-        out.append(
-            f"code: {idx.usages} usage(s) of {', '.join(idx.import_names) or bump.package} "
-            f"in {idx.files_importing} file(s); {idx.files_scanned} Python file(s) scanned"
-        )
-        out.append(_VERDICT_TEXT[bump_report.verdict])
-        out.append(_headline(bump_report))
-        if bump_report.claims_dropped:
-            out.append(
-                f"({bump_report.claims_dropped} claim(s) dropped: their quotes were not found "
-                "in the notes)"
-            )
+        out.extend(_text_header(bump_report))
         for result in bump_report.results:
-            claim = result.claim
-            out.append("")
-            out.append(f"[{result.status.value}] {claim.id} {claim.kind.value}: {claim.summary}")
-            for line, quote, version in _quote(result):
-                out.append(f'  notes N{line} ({version}): "{quote}"')
-            if claim.symbols or claim.parameters:
-                names = ", ".join([*claim.symbols, *(f"{p}=" for p in claim.parameters)])
-                out.append(f"  symbols: {names}")
-            if _imports_only(result):
-                out.append(f"  {_imports_summary(result)}")
-                continue
-            for match in result.matches[:MAX_MATCHES_SHOWN]:
-                usage = match.usage
-                out.append(f"  {usage.path}:{usage.line}  {usage.snippet}  ({match.reason})")
-            if len(result.matches) > MAX_MATCHES_SHOWN:
-                out.append(f"  ... and {len(result.matches) - MAX_MATCHES_SHOWN} more")
+            out.extend(_text_result(result))
+        out.extend(_text_uncovered(bump_report))
         model = _model_line(bump_report)
         if model:
-            out.append("")
-            out.append(model)
-        for warning in bump_report.warnings:
-            out.append(f"warning: {warning}")
+            out.extend(["", model])
+        out.extend(f"warning: {warning}" for warning in bump_report.warnings)
         out.append("")
-    for warning in report.warnings:
-        out.append(f"note: {warning}")
+    out.extend(f"note: {warning}" for warning in report.warnings)
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -144,6 +166,15 @@ def render_markdown(report: Report) -> str:
                     f"| {result.status.value} | {claim.kind.value}: {summary} | "
                     f"{cites.replace('|', chr(92) + '|')} | {code.replace('|', chr(92) + '|')} |"
                 )
+            out.append("")
+        if bump_report.uncovered:
+            out.append(
+                "Note lines that read like breaking changes but no verified claim cites "
+                "(check by hand):"
+            )
+            out.append("")
+            for note in bump_report.uncovered[:MAX_MATCHES_SHOWN]:
+                out.append(f"- N{note.n} ({note.version}): {note.text.strip()}")
             out.append("")
         model = _model_line(bump_report)
         if model:

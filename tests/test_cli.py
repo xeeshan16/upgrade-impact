@@ -121,6 +121,8 @@ def test_no_llm_lists_notes_and_usages(
     )
     assert code == 0
     assert "claims: not extracted (--no-llm)" in out
+    assert "[unclaimed]" in out
+    assert "The deprecated `proxies` argument has now been removed." in out
     assert "usage(s) of httpx in 2 file(s)" in out
 
 

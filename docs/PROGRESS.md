@@ -38,3 +38,14 @@ Found while building:
   with that reason; only a claim with a verified symbol can be "affected".
   Telling `AsyncClient(app=)` from `ASGITransport(app=)` is the day 2
   adjudicator's job.
+- The first real-model run (qwen2.5:3b on Ollama, CPU runner,
+  [run 44907695785](https://github.com/xeeshan16/upgrade-impact/actions/runs/44907695785))
+  returned `{"claims": []}` in 6 output tokens for both PRs, and the report said
+  "NO IMPACT FOUND". Under constrained decoding an empty list is the shortest
+  valid answer. Two changes: the schema now asks for `breaking_lines` first
+  (the model points at lines before writing claims) and a reply that flags
+  lines but claims nothing gets one follow-up asking for those claims; and a
+  deterministic safety net lists note lines that read like breaking changes
+  ("removed", "renamed", "no longer", ...) but that no verified claim cites,
+  which turns the verdict into "review". A model that returns nothing can no
+  longer produce a confident "no impact".

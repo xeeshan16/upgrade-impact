@@ -8,6 +8,8 @@ from upgrade_impact.extract import (
     build_prompt,
     extract_claims,
     parse_claims,
+    parse_reply,
+    uncovered_lines,
     verify_claims,
     verify_quote,
 )
@@ -184,3 +186,61 @@ def test_fake_provider_on_real_notes_is_labelled(fixtures: Path) -> None:
     assert all(c.summary.startswith("[fake provider]") for c in result.claims)
     removed = [c for c in result.claims if c.kind == ClaimKind.REMOVED]
     assert {tuple(c.parameters) for c in removed} >= {("proxies",), ("app",)}
+
+
+def test_flagged_lines_without_claims_get_one_nudge(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    n = _line_of(notes, "`proxies` argument")
+    lazy = json.dumps({"breaking_lines": [n, 99999], "claims": []})
+    good = json.dumps(
+        {
+            "breaking_lines": [n],
+            "claims": [
+                {
+                    "evidence": [{"line": n, "quote": "`proxies` argument has now been removed"}],
+                    "summary": "proxies is gone",
+                    "kind": "removed",
+                    "symbols": [],
+                    "parameters": ["proxies"],
+                }
+            ],
+        }
+    )
+    chat = ScriptedChat([lazy, good])
+    result = extract_claims(chat, BUMP, notes, budget_tokens=5000)
+    assert result.run.calls == 2
+    assert f"You listed N{n} as breaking changes" in chat.requests[1][-1].content
+    assert [c.parameters for c in result.claims] == [["proxies"]]
+
+    # Only one nudge: a model that keeps returning nothing is left alone.
+    stubborn = ScriptedChat([lazy, lazy])
+    assert extract_claims(stubborn, BUMP, notes, budget_tokens=5000).claims == []
+    assert len(stubborn.requests) == 2
+
+    # Nothing flagged and nothing claimed: no nudge.
+    quiet = ScriptedChat([json.dumps({"breaking_lines": [], "claims": []})])
+    assert extract_claims(quiet, BUMP, notes, budget_tokens=5000).run.calls == 1
+
+
+def test_parse_reply_reads_flagged_lines() -> None:
+    reply = parse_reply('{"breaking_lines": [3, "N7", "x"], "claims": []}')
+    assert reply.breaking_lines == [3, 7]
+    assert parse_reply('{"claims": []}').breaking_lines == []
+
+
+def test_uncovered_lines_are_the_safety_net(fixtures: Path) -> None:
+    notes = httpx_notes(fixtures)
+    proxies = _line_of(notes, "`proxies` argument")
+    app = _line_of(notes, "`app` argument")
+    everything = uncovered_lines(notes, [])
+    assert {proxies, app} <= set(everything)
+    covered = Claim(
+        id="C1",
+        kind=ClaimKind.REMOVED,
+        summary="s",
+        evidence=[Evidence(line=proxies, quote="q", verified=True)],
+        verified=True,
+    )
+    remaining = uncovered_lines(notes, [covered])
+    assert proxies not in remaining
+    assert app in remaining

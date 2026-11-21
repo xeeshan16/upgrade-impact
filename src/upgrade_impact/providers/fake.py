@@ -92,7 +92,9 @@ class FakeChat:
         json_schema: Mapping[str, Any] | None = None,
     ) -> Completion:
         prompt = messages[-1].content if messages else ""
-        text = json.dumps({"claims": fake_claims(prompt)})
+        claims = fake_claims(prompt)
+        flagged = sorted({ev["line"] for claim in claims for ev in claim["evidence"]})
+        text = json.dumps({"breaking_lines": flagged, "claims": claims})
         return Completion(text, self._model, _usage(messages, text), 0.0, "stop")
 
 

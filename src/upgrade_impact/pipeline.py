@@ -12,7 +12,7 @@ from pathlib import Path
 
 from upgrade_impact.bump import FileDiff, patch_lines, resolve_bumps, split_unified_diff
 from upgrade_impact.config import Settings
-from upgrade_impact.extract import extract_claims
+from upgrade_impact.extract import extract_claims, uncovered_lines
 from upgrade_impact.index.python import import_names_for, index_repository
 from upgrade_impact.match import match_claims
 from upgrade_impact.models import Bump, BumpReport, Ecosystem, Report
@@ -178,6 +178,10 @@ def check_bump(
         )
 
     if chat is None or not notes.lines:
+        # Without a model, the lines that read like breaking changes are the summary.
+        report.uncovered = [
+            line for n in uncovered_lines(notes, []) if (line := notes.line(n)) is not None
+        ]
         return report
     extraction = extract_claims(
         chat,
@@ -192,6 +196,11 @@ def check_bump(
     report.claims_dropped = extraction.dropped
     report.warnings.extend(extraction.warnings)
     report.results = match_claims(extraction.claims, usages, names)
+    report.uncovered = [
+        line
+        for n in uncovered_lines(notes, extraction.claims)
+        if (line := notes.line(n)) is not None
+    ]
     return report
 
 
