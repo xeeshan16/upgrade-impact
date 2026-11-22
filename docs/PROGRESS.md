@@ -90,3 +90,75 @@ Found while building:
 Next (day 2): tree-sitter indexing for Python and JS/TS, attribute-name
 candidates for method calls, and a model adjudication step that reads each
 "possible" or "needs review" match with its code context and cites both sides.
+
+## Day 2 — 2026-11-22: usage analysis core
+
+Built:
+
+- Python index: method calls on instances whose class is visible in the same
+  file (`c = httpx.Client()`, `with ... as c`, `self.c = ...`, annotated
+  parameters, local functions with a return annotation) resolve to
+  `httpx.Client.get`, and names re-exported by local modules (compat shims,
+  `__init__` barrels, `src/` layouts) are followed one hop. Every usage found
+  this way records how (`via`), and the report shows it.
+- JavaScript/TypeScript index with tree-sitter for npm bumps (ESM, type and
+  namespace imports, `require` with destructuring, dynamic `import()`,
+  re-exports and barrel files, calls and `new` with object-literal keys as
+  options (nested objects included), JSX props, type references, methods on
+  `new` instances). On `alan2207/bulletproof-react` (447 files) it indexes 243
+  `@tanstack/react-query` usages in 58 files in well under a second, no parse
+  errors.
+- Review step (ADR 0002): uncertain matches go back to the model with a
+  numbered code window and the note lines around the claim; each verdict
+  cites a code line and a note line, both verified. Unverified verdicts are
+  "unclear"; cleared lines stay in the report. Capped at 12 candidates per
+  claim and 8 uncached calls per bump.
+- On-disk reply cache keyed by the full request; fence markers are now derived
+  from the fenced content so identical requests stay identical. A second run
+  of the same check makes 0 paid calls (tested end to end with the fake).
+
+Found while building (real runs, `real-model` workflow, Ollama on CPU):
+
+- First run of the review
+  ([run 45025347211](https://github.com/xeeshan16/upgrade-impact/actions/runs/45025347211),
+  `cc01fcb`), qwen2.5:7b: on fastapi-pagination it called
+  `tests/conftest.py:271` (the line the maintainer fixed) affected, as hoped.
+  On govbr_auth it called six `httpx.ASGITransport(app=...)` lines affected
+  and two unclear: it made the false alarms *worse*, promoting them from
+  "possible" to "affected". The notes ("the deprecated `app` argument has now
+  been removed") never name the API, and the model filled the gap with a
+  guess ("which is the API mentioned in the notes").
+- So for a claim that names no symbol, an "affected" verdict must now name,
+  from the shown notes, what the line uses (`notes_api`), and that name must
+  be what the line calls. With that rule
+  ([run 45027489304](https://github.com/xeeshan16/upgrade-impact/actions/runs/45027489304),
+  `5501a54`): qwen2.5:7b again said "affected" for six ASGITransport lines,
+  naming `httpx.ASGITransport` as "the API mentioned in the notes"; none is
+  accepted, and govbr_auth is back to "possible" with no line promoted. The
+  cost is that conftest.py:271 is "possible" again too; with these notes,
+  that is the honest answer. Clearing the ASGITransport lines needs the 0.27.0
+  deprecation notice ("use the explicit style of
+  `transport=httpx.ASGITransport()`"), which lies before the bump's range:
+  added to day 4 (deprecation history as review context).
+- qwen2.5:3b on the same run ran its 8-call budget on govbr_auth (14 claims,
+  810 s of review) and promoted three vague claims ("the 0.28 release includes
+  a limited set of deprecations") to "affected"; it also produced 12 verdicts
+  whose quotes were not on the cited lines, all correctly counted as unclear.
+  The named-API rule now applies to every claim without a symbol, and the
+  package name does not count. Its effect is measured on the next run.
+- The first 3b run had no call budget and was still reviewing govbr_auth after
+  40 minutes when it was cancelled; hence the per-bump cap.
+- Review is slow on a CPU runner: 2 calls for 12 candidates took 619 s with
+  the 7B model. Concurrency and timeouts come on day 6; caching already makes
+  re-runs free.
+- Plan changes: Python stays on the stdlib `ast` (exact, no extra dependency);
+  embedding ranking and config-file usages move to day 4, where they can be
+  measured on the dev split. No npm demo PR yet: the axios 0.x to 1.x bumps
+  found span hundreds of note lines, too slow for the CPU workflow; day 3's
+  miner will supply npm cases.
+
+Next (day 3): the dataset miner (Dependabot/Renovate PRs with human follow-up
+commits as labels, clean merges as no-impact), splits by repo, the import-grep,
+symbol-grep and naive-prompt baselines, and `upgrade-impact eval` with
+precision/recall, false-alarm rate and bootstrap CIs, with and without review.
+

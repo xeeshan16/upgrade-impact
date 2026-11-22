@@ -27,6 +27,12 @@ symbols plus optional embeddings. The model then adjudicates each candidate
 with its code context. Both sides of every citation are verified. Results are
 cached on disk.
 
+*Adjusted on day 2 (see PROGRESS):* Python stays on the stdlib `ast` (it is
+exact for Python and adds no dependency); tree-sitter is used for JS/TS.
+Embedding-based candidate ranking and config-file indexing move to day 4,
+where they can be measured on the dev split instead of added blind; day 2
+ranks no-symbol candidates lexically.
+
 ## Day 3: dataset and eval harness
 A miner that runs in CI and builds a labelled set from real Dependabot/Renovate
 PRs: follow-up human code commits mark impact, clean merges with green CI mark
@@ -38,8 +44,11 @@ CI gate.
 ## Day 4: quality and safety
 Treat release notes as untrusted input: fence them, check for injection, and
 validate output. Chunk long changelogs and slice them by version range. Follow
-migration-guide links. Calibrate "no impact" and confidence. Everything
-measured on the dev split.
+migration-guide links. Calibrate "no impact" and confidence. Optional
+embedding ranking of review candidates and config-file usages (moved from
+day 2). Deprecation history as review context: for "the deprecated X has now
+been removed", the earlier deprecation notice (outside the bump's range)
+usually names the API and its replacement. Everything measured on the dev split.
 
 ## Day 5: where developers work
 A GitHub Action for bump PRs that writes the job summary and annotations and
