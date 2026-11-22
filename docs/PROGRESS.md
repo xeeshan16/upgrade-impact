@@ -145,7 +145,15 @@ Found while building (real runs, `real-model` workflow, Ollama on CPU):
   a limited set of deprecations") to "affected"; it also produced 12 verdicts
   whose quotes were not on the cited lines, all correctly counted as unclear.
   The named-API rule now applies to every claim without a symbol, and the
-  package name does not count. Its effect is measured on the next run.
+  package name does not count. On the next run
+  ([run 45029569598](https://github.com/xeeshan16/upgrade-impact/actions/runs/45029569598),
+  `321c769`) it rejected 11 unsupported "affected" verdicts from 3b, and the
+  vague claims stayed "needs review". One false positive got through: for
+  "JSON request bodies use a compact representation" 3b called two
+  `response.json()` lines affected, and "JSON" matched the method name
+  case-insensitively. The request/response distinction is beyond a name rule;
+  it goes on the day 3 eval's list of measured failure modes. qwen2.5:7b on
+  the same run: both PRs "possible", no line promoted, no false "affected".
 - The first 3b run had no call budget and was still reviewing govbr_auth after
   40 minutes when it was cancelled; hence the per-bump cap.
 - Review is slow on a CPU runner: 2 calls for 12 candidates took 619 s with
