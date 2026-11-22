@@ -113,6 +113,12 @@ def _match_usage(claim: Claim, usage: Usage, import_names: list[str]) -> Match |
     return Match(usage=usage, strength=MatchStrength.SYMBOL, reason=f"uses {symbol_hit}")
 
 
+def _with_via(match: Match | None) -> Match | None:
+    if match is None or not match.usage.via:
+        return match
+    return match.model_copy(update={"reason": f"{match.reason}; {match.usage.via}"})
+
+
 def match_claims(
     claims: list[Claim], usages: list[Usage], import_names: list[str]
 ) -> list[ClaimResult]:
@@ -135,7 +141,9 @@ def match_claims(
                 ]
             results.append(ClaimResult(claim=claim, status=status, matches=matches))
             continue
-        matches = [m for u in usages if (m := _match_usage(claim, u, import_names)) is not None]
+        matches = [
+            m for u in usages if (m := _with_via(_match_usage(claim, u, import_names))) is not None
+        ]
         if any(m.strength == MatchStrength.DIRECT for m in matches):
             status = ClaimStatus.AFFECTED
         elif matches:

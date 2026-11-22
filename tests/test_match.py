@@ -129,3 +129,24 @@ def test_results_are_ordered_by_severity(sample_repo: Path) -> None:
         ClaimStatus.NEEDS_REVIEW,
         ClaimStatus.NOT_FOUND,
     ]
+
+
+def test_method_claim_matches_instance_calls_and_says_how() -> None:
+    from upgrade_impact.match import match_claims
+    from upgrade_impact.models import Claim, ClaimKind, ClaimStatus, Usage, UsageKind
+
+    claim = Claim(
+        id="C1", kind=ClaimKind.REMOVED, summary="Client.stream removed", symbols=["Client.stream"]
+    )
+    usage = Usage(
+        path="a.py",
+        line=3,
+        column=1,
+        symbol="httpx.Client.stream",
+        kind=UsageKind.CALL,
+        snippet="c.stream('GET', u)",
+        via="c = httpx.Client at line 2",
+    )
+    [result] = match_claims([claim], [usage], ["httpx"])
+    assert result.status == ClaimStatus.AFFECTED
+    assert result.matches[0].reason == "uses Client.stream; c = httpx.Client at line 2"

@@ -148,6 +148,11 @@ class Usage(BaseModel):
     kind: UsageKind
     keywords: list[str] = Field(default_factory=list)
     snippet: str
+    via: str | None = Field(
+        default=None,
+        description="How the symbol was resolved when it is not imported directly: "
+        "an instance (c = httpx.Client() at line 4) or a local re-export.",
+    )
 
 
 class MatchStrength(StrEnum):
