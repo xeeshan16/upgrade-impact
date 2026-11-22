@@ -13,8 +13,8 @@ candidate, and asks for one verdict per candidate: ``affected``,
 from it) and a note line (with a quote). Both citations are checked against
 the real file and the real notes. A verdict whose citations do not check out
 counts as ``unclear``: an unverified "not affected" never clears a candidate.
-For a claim that names only a parameter, an ``affected`` verdict also has to
-name the API from the shown notes, and it has to be the API the line calls.
+For a claim that names no symbol, an ``affected`` verdict also has to name,
+from the shown notes, the API (or option) the line calls or passes.
 
 Candidates the deterministic matcher marked ``direct`` (a call passing the
 removed keyword to the named API, a use of a removed symbol) are not sent:
@@ -76,11 +76,11 @@ touch;
 - unclear: the shown code is not enough to tell (for example options arrive \
 through **kwargs from elsewhere).
 
-Many APIs share parameter names. When the change is about a parameter or option, \
-first find which class or function the notes say lost or changed it, and put that \
-name, spelled as in the notes, in notes_api (empty if the notes do not say). A call \
-that passes a parameter with the same name to a different API is not affected; one \
-that passes it to an API the notes do not name is unclear.
+In notes_api put the class, function, method or option the notes say changed, \
+spelled as in the notes (empty if the notes do not name one). Many APIs share \
+parameter names: when the change is about a parameter, notes_api is the API that \
+lost or changed it. A call that passes a parameter with the same name to a different \
+API is not affected; a call to an API the notes do not name is unclear.
 
 For every decision cite the code line number you relied on with a short quote copied \
 character for character from that line, and the release-note line number (N12 is 12) \
@@ -255,21 +255,30 @@ def parse_decisions(text: str) -> list[dict[str, Any]]:
     return [d for d in data["decisions"] if isinstance(d, dict)]
 
 
-def _api_supported(claim: Claim, notes_api: str, shown: str, symbol: str) -> bool:
-    """For a claim that names only a parameter: does the model's ``notes_api`` appear
-    in the shown notes, and is it the API this line calls?
+def _api_supported(claim: Claim, notes_api: str, shown: str, usage: Usage) -> bool:
+    """For a claim that names no symbol: does the model's ``notes_api`` appear in the
+    shown notes, and is it what this line calls or passes?
 
-    Day 2's real run: qwen2.5:7b called ``httpx.ASGITransport(app=...)`` affected by
+    Day 2's real runs: qwen2.5:7b called ``httpx.ASGITransport(app=...)`` affected by
     "the deprecated `app` argument has now been removed" (which is about ``Client``)
-    because the parameter name matched. Without the notes naming the API, a
-    same-named parameter is not evidence.
+    because the parameter name matched, and qwen2.5:3b called ordinary httpx calls
+    affected by "the 0.28 release includes a limited set of deprecations". Without
+    the notes naming what this line uses, the model's "affected" is not evidence.
+    The package name itself does not count: it names every line.
     """
-    if claim.symbols or not claim.parameters:
+    if claim.symbols:
         return True
     name = re.split(r"[.:#/]", notes_api.strip().strip("`").split("(", 1)[0])[-1]
-    if not name or not re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", shown):
+    if not name:
         return False
-    return name in re.split(r"[./]", symbol)
+    flags = 0 if claim.parameters else re.IGNORECASE
+    if not re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", shown, flags):
+        return False
+    parts = [p for p in re.split(r"[./]", usage.symbol) if p][1:]  # without the package
+    used = parts + [k for k in usage.keywords if k not in ("*", "**")]
+    if claim.parameters:
+        return name in parts
+    return name.lower() in {u.lower() for u in used}
 
 
 def to_adjudication(
@@ -305,7 +314,7 @@ def to_adjudication(
             note_quote=note_quote[:300],
             note_verified=found_note is not None and found_note in note_lines,
             notes_api=notes_api,
-            api_supported=_api_supported(claim, notes_api, shown, candidate.match.usage.symbol),
+            api_supported=_api_supported(claim, notes_api, shown, candidate.match.usage),
         )
     except ValidationError:
         return None
@@ -415,7 +424,7 @@ def _candidate_pool(
     nothing, every call into the package ranked by overlap with the change."""
     if result.status == ClaimStatus.NEEDS_REVIEW:
         return [
-            Match(usage=u, strength=MatchStrength.IMPORT, reason="calls into the package")
+            Match(usage=u, strength=MatchStrength.SYMBOL, reason="calls into the package")
             for u in rank_usages(result.claim, notes, usages)
         ]
     return [m for m in result.matches if m.strength != MatchStrength.DIRECT]
@@ -539,8 +548,8 @@ def _review_batch(
     unsupported = sum(1 for d in reviewed.values() if d.verified and d.effective != d.verdict)
     if unsupported:
         outcome.warnings.append(
-            f"{claim.id}: {unsupported} 'affected' verdict(s) named no API from the notes for "
-            "a parameter-only change and count as unclear"
+            f"{claim.id}: {unsupported} 'affected' verdict(s) did not name, from the notes, "
+            "the API the line uses, and count as unclear"
         )
     if unverified:
         outcome.warnings.append(

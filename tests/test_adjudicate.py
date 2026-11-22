@@ -215,11 +215,11 @@ def test_parameter_only_affected_needs_the_api_named_in_the_notes(repo: Path) ->
         for m in result.matches
     )
     assert outcome.warnings == [
-        "C1: 2 'affected' verdict(s) named no API from the notes for a parameter-only "
-        "change and count as unclear"
+        "C1: 2 'affected' verdict(s) did not name, from the notes, the API the line uses, "
+        "and count as unclear"
     ]
     text = render_text_for(result)
-    assert "the notes do not tie the change to the API this line calls (it named 'app')" in text
+    assert "the notes do not name what this line uses (it named 'app')" in text
 
     # Named in the notes, but not the API this line calls: still unclear.
     results, usages = _results(repo, [app_claim()])
@@ -321,6 +321,7 @@ def test_claims_without_symbols_review_ranked_calls(repo: Path) -> None:
                             "httpx.post(url, json=payload)",
                             note_line=5,
                             note_quote="JSON request bodies use a compact representation",
+                            notes_api="JSON",
                         )
                     ]
                 }
@@ -330,6 +331,37 @@ def test_claims_without_symbols_review_ranked_calls(repo: Path) -> None:
     adjudicate(chat, BUMP, NOTES, results, usages=usages, files=SourceFiles(repo))
     assert _status(result) == ClaimStatus.AFFECTED
     assert result.matches[0].usage.symbol == "httpx.post"
+    text = render_text_for(result)
+    assert "conftest.py:13  return httpx.post(url, json=payload)" in text
+
+
+def test_vague_claims_cannot_promote_lines(repo: Path) -> None:
+    """qwen2.5:3b on govbr_auth: "the 0.28 release includes a limited set of
+    deprecations" became a claim, and the review called ordinary calls affected."""
+    vague = behaviour_claim().model_copy(
+        update={
+            "summary": "The 0.28 release includes deprecated features.",
+            "evidence": [Evidence(line=1, quote="limited set of deprecations", verified=True)],
+        }
+    )
+    results, usages = _results(repo, [vague])
+    reply = json.dumps(
+        {
+            "decisions": [
+                _decision(
+                    "K1",
+                    "affected",
+                    13,
+                    "httpx.post(url, json=payload)",
+                    note_line=1,
+                    note_quote="limited set of deprecations",
+                    notes_api="httpx",
+                )
+            ]
+        }
+    )
+    adjudicate(ScriptedChat([reply]), BUMP, NOTES, results, usages=usages, files=SourceFiles(repo))
+    assert results[0].status == ClaimStatus.NEEDS_REVIEW
 
 
 def test_claims_without_symbols_are_cleared_only_when_every_call_was_read(repo: Path) -> None:

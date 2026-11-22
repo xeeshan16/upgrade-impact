@@ -97,8 +97,8 @@ def _decision(match: Match) -> str | None:
     if decision.effective != decision.verdict:
         api = f" (it named {decision.notes_api!r})" if decision.notes_api else ""
         return (
-            f"model said {decision.verdict.value}, but the notes do not tie the change to "
-            f"the API this line calls{api}, so it counts as unclear: {decision.reason}"
+            f"model said {decision.verdict.value}, but the notes do not name what this line "
+            f"uses{api}, so it counts as unclear: {decision.reason}"
         )
     return f"model: {decision.verdict.value}{where}: {decision.reason}"
 
