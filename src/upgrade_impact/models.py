@@ -178,6 +178,14 @@ class Adjudication(BaseModel):
     note_line: int | None = None
     note_quote: str = ""
     note_verified: bool = False
+    notes_api: str = Field(
+        default="", description="The API the model says the notes tie the change to."
+    )
+    api_supported: bool = Field(
+        default=True,
+        description="False when the claim names only a parameter and the model called the "
+        "line affected without naming, from the shown notes, the API this line calls.",
+    )
 
     @property
     def verified(self) -> bool:
@@ -185,8 +193,14 @@ class Adjudication(BaseModel):
 
     @property
     def effective(self) -> Verdict:
-        """A verdict only counts when both citations were found; otherwise it is unclear."""
-        return self.verdict if self.verified else Verdict.UNCLEAR
+        """A verdict only counts when both citations were found (and, for an
+        ``affected`` verdict on a parameter-only claim, when the notes name the
+        API the line calls); otherwise it is unclear."""
+        if not self.verified:
+            return Verdict.UNCLEAR
+        if self.verdict == Verdict.AFFECTED and not self.api_supported:
+            return Verdict.UNCLEAR
+        return self.verdict
 
 
 class Match(BaseModel):

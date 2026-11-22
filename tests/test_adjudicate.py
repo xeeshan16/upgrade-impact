@@ -54,6 +54,24 @@ NOTES = ReleaseNotes.from_sections(
         )
     ],
 )
+# The same change, worded the way it would need to be for a parameter-only claim
+# to be decidable from the notes.
+NAMED_NOTES = ReleaseNotes.from_sections(
+    "httpx",
+    [
+        NotesSection(
+            version="0.28.0",
+            source="changelog",
+            lines=[
+                "The 0.28 release includes a limited set of deprecations.",
+                "",
+                "* The deprecated `proxies` argument has now been removed.",
+                "* The deprecated `app` argument of `AsyncClient` has now been removed.",
+                "* JSON request bodies use a compact representation.",
+            ],
+        )
+    ],
+)
 CODE = """\
 import httpx
 
@@ -108,7 +126,8 @@ def _decision(
         "code_line": code_line,
         "code_quote": code_quote,
         "note_line": extra.get("note_line", 4),
-        "note_quote": extra.get("note_quote", "deprecated `app` argument has now been removed"),
+        "note_quote": extra.get("note_quote", "The deprecated `app` argument"),
+        "notes_api": extra.get("notes_api", ""),
         "reason": extra.get("reason", "because"),
     }
 
@@ -123,12 +142,19 @@ def test_model_separates_the_removed_argument_from_a_namesake(repo: Path) -> Non
             json.dumps(
                 {
                     "decisions": [
-                        _decision("K1", "affected", 5, "httpx.AsyncClient(app=app"),
+                        _decision(
+                            "K1",
+                            "affected",
+                            5,
+                            "httpx.AsyncClient(app=app",
+                            notes_api="AsyncClient",
+                        ),
                         _decision(
                             "K2",
                             "not_affected",
                             9,
                             "httpx.ASGITransport(app=app)",
+                            notes_api="AsyncClient",
                             reason="app= is the transport's own argument",
                         ),
                     ]
@@ -137,7 +163,13 @@ def test_model_separates_the_removed_argument_from_a_namesake(repo: Path) -> Non
         ]
     )
     outcome = adjudicate(
-        chat, BUMP, NOTES, results, usages=usages, files=SourceFiles(repo), max_candidates=12
+        chat,
+        BUMP,
+        NAMED_NOTES,
+        results,
+        usages=usages,
+        files=SourceFiles(repo),
+        max_candidates=12,
     )
     assert _status(result) == ClaimStatus.AFFECTED
     assert [m.usage.line for m in result.matches] == [5]
@@ -148,7 +180,7 @@ def test_model_separates_the_removed_argument_from_a_namesake(repo: Path) -> Non
     assert outcome.warnings == []
     # The prompt fences notes and code, numbers code lines, and asks for the schema.
     prompt = chat.requests[0][-1].content
-    assert "N4: * The deprecated `app` argument has now been removed." in prompt
+    assert "N4: * The deprecated `app` argument of `AsyncClient` has now been removed." in prompt
     assert "N3: * The deprecated `proxies` argument has now been removed." in prompt
     assert "    9|     return httpx.ASGITransport(app=app)" in prompt
     assert chat.schemas[0] == ADJUDICATION_SCHEMA
@@ -157,6 +189,51 @@ def test_model_separates_the_removed_argument_from_a_namesake(repo: Path) -> Non
     assert "model: affected [code L5, notes N4]: because" in text
     assert "cleared conftest.py:9" in text
     assert "app= is the transport's own argument" in text
+
+
+def test_parameter_only_affected_needs_the_api_named_in_the_notes(repo: Path) -> None:
+    """The day 2 real-model failure: httpx's notes say "the deprecated `app` argument
+    has now been removed" without naming Client, and qwen2.5:7b called
+    ASGITransport(app=...) affected. Without the API named in the notes, a
+    same-named parameter is not evidence."""
+    results, usages = _results(repo, [app_claim()])
+    [result] = results
+    reply = json.dumps(
+        {
+            "decisions": [
+                _decision("K1", "affected", 5, "httpx.AsyncClient(app=app"),
+                _decision("K2", "affected", 9, "httpx.ASGITransport(app=app)", notes_api="app"),
+            ]
+        }
+    )
+    outcome = adjudicate(
+        ScriptedChat([reply]), BUMP, NOTES, results, usages=usages, files=SourceFiles(repo)
+    )
+    assert _status(result) == ClaimStatus.POSSIBLE
+    assert all(
+        m.adjudication is not None and m.adjudication.effective == Verdict.UNCLEAR
+        for m in result.matches
+    )
+    assert outcome.warnings == [
+        "C1: 2 'affected' verdict(s) named no API from the notes for a parameter-only "
+        "change and count as unclear"
+    ]
+    text = render_text_for(result)
+    assert "the notes do not tie the change to the API this line calls (it named 'app')" in text
+
+    # Named in the notes, but not the API this line calls: still unclear.
+    results, usages = _results(repo, [app_claim()])
+    reply = json.dumps(
+        {
+            "decisions": [
+                _decision("K2", "affected", 9, "ASGITransport(app=app)", notes_api="AsyncClient"),
+            ]
+        }
+    )
+    adjudicate(
+        ScriptedChat([reply]), BUMP, NAMED_NOTES, results, usages=usages, files=SourceFiles(repo)
+    )
+    assert results[0].status == ClaimStatus.POSSIBLE
 
 
 def render_text_for(result: ClaimResult) -> str:
@@ -316,12 +393,20 @@ def test_batches_and_missing_files(repo: Path, tmp_path: Path) -> None:
     results, usages = _results(repo, [app_claim()])
     chat = ScriptedChat(
         [
-            json.dumps({"decisions": [_decision("K1", "affected", 5, "AsyncClient(app=app")]}),
+            json.dumps(
+                {
+                    "decisions": [
+                        _decision(
+                            "K1", "affected", 5, "AsyncClient(app=app", notes_api="`AsyncClient`"
+                        )
+                    ]
+                }
+            ),
             json.dumps({"decisions": [_decision("K2", "unclear", 9, "ASGITransport")]}),
         ]
     )
     outcome = adjudicate(
-        chat, BUMP, NOTES, results, usages=usages, files=SourceFiles(repo), batch_size=1
+        chat, BUMP, NAMED_NOTES, results, usages=usages, files=SourceFiles(repo), batch_size=1
     )
     assert outcome.run.calls == 2
     assert results[0].status == ClaimStatus.AFFECTED

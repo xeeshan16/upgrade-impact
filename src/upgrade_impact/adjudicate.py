@@ -13,6 +13,8 @@ candidate, and asks for one verdict per candidate: ``affected``,
 from it) and a note line (with a quote). Both citations are checked against
 the real file and the real notes. A verdict whose citations do not check out
 counts as ``unclear``: an unverified "not affected" never clears a candidate.
+For a claim that names only a parameter, an ``affected`` verdict also has to
+name the API from the shown notes, and it has to be the API the line calls.
 
 Candidates the deterministic matcher marked ``direct`` (a call passing the
 removed keyword to the named API, a use of a removed symbol) are not sent:
@@ -74,6 +76,12 @@ touch;
 - unclear: the shown code is not enough to tell (for example options arrive \
 through **kwargs from elsewhere).
 
+Many APIs share parameter names. When the change is about a parameter or option, \
+first find which class or function the notes say lost or changed it, and put that \
+name, spelled as in the notes, in notes_api (empty if the notes do not say). A call \
+that passes a parameter with the same name to a different API is not affected; one \
+that passes it to an API the notes do not name is unclear.
+
 For every decision cite the code line number you relied on with a short quote copied \
 character for character from that line, and the release-note line number (N12 is 12) \
 with a short quote copied from it. Give a one-sentence reason.
@@ -96,10 +104,12 @@ ADJUDICATION_SCHEMA: dict[str, Any] = {
                     "code_quote": {"type": "string"},
                     "note_line": {"type": "integer"},
                     "note_quote": {"type": "string"},
+                    "notes_api": {"type": "string"},
                     "reason": {"type": "string"},
                 },
                 "required": [
                     "candidate",
+                    "notes_api",
                     "verdict",
                     "code_line",
                     "code_quote",
@@ -245,11 +255,29 @@ def parse_decisions(text: str) -> list[dict[str, Any]]:
     return [d for d in data["decisions"] if isinstance(d, dict)]
 
 
+def _api_supported(claim: Claim, notes_api: str, shown: str, symbol: str) -> bool:
+    """For a claim that names only a parameter: does the model's ``notes_api`` appear
+    in the shown notes, and is it the API this line calls?
+
+    Day 2's real run: qwen2.5:7b called ``httpx.ASGITransport(app=...)`` affected by
+    "the deprecated `app` argument has now been removed" (which is about ``Client``)
+    because the parameter name matched. Without the notes naming the API, a
+    same-named parameter is not evidence.
+    """
+    if claim.symbols or not claim.parameters:
+        return True
+    name = re.split(r"[.:#/]", notes_api.strip().strip("`").split("(", 1)[0])[-1]
+    if not name or not re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", shown):
+        return False
+    return name in re.split(r"[./]", symbol)
+
+
 def to_adjudication(
     raw: dict[str, Any],
     candidate: Candidate,
     notes: ReleaseNotes,
     note_lines: Sequence[int],
+    claim: Claim,
 ) -> Adjudication | None:
     verdict_text = str(raw.get("verdict") or "").strip().lower().replace(" ", "_")
     if verdict_text not in Verdict._value2member_map_:
@@ -264,6 +292,8 @@ def to_adjudication(
         else None
     )
     found_note = locate_quote(notes, note_line, note_quote) if note_line is not None else None
+    notes_api = str(raw.get("notes_api") or "").strip()[:200]
+    shown = "\n".join(notes.lines[n - 1].text for n in note_lines)
     try:
         return Adjudication(
             verdict=Verdict(verdict_text),
@@ -274,6 +304,8 @@ def to_adjudication(
             note_line=found_note or note_line,
             note_quote=note_quote[:300],
             note_verified=found_note is not None and found_note in note_lines,
+            notes_api=notes_api,
+            api_supported=_api_supported(claim, notes_api, shown, candidate.match.usage.symbol),
         )
     except ValidationError:
         return None
@@ -471,10 +503,16 @@ def _review_batch(
         candidate = _key_of(raw, index, batch)
         if candidate is None or id(candidate.match) in reviewed:
             continue
-        decision = to_adjudication(raw, candidate, notes, note_lines)
+        decision = to_adjudication(raw, candidate, notes, note_lines, claim)
         if decision is not None:
             reviewed[id(candidate.match)] = decision
     unverified = sum(1 for d in reviewed.values() if not d.verified)
+    unsupported = sum(1 for d in reviewed.values() if d.verified and d.effective != d.verdict)
+    if unsupported:
+        outcome.warnings.append(
+            f"{claim.id}: {unsupported} 'affected' verdict(s) named no API from the notes for "
+            "a parameter-only change and count as unclear"
+        )
     if unverified:
         outcome.warnings.append(
             f"{claim.id}: {unverified} adjudication(s) cited lines that could not be verified "

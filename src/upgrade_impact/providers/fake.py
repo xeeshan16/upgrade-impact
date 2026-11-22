@@ -114,6 +114,7 @@ def fake_decisions(prompt: str) -> list[dict[str, Any]]:
                 "code_quote": text[:60],
                 "note_line": note_n,
                 "note_quote": note_text.strip().lstrip("-*• ")[:60],
+                "notes_api": last if verdict == "affected" else "",
                 "reason": f"[fake provider] {why}",
             }
         )

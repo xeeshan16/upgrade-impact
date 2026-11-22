@@ -94,6 +94,12 @@ def _decision(match: Match) -> str | None:
             f"model said {decision.verdict.value}, but its citations did not check out, "
             f"so it counts as unclear: {decision.reason}"
         )
+    if decision.effective != decision.verdict:
+        api = f" (it named {decision.notes_api!r})" if decision.notes_api else ""
+        return (
+            f"model said {decision.verdict.value}, but the notes do not tie the change to "
+            f"the API this line calls{api}, so it counts as unclear: {decision.reason}"
+        )
     return f"model: {decision.verdict.value}{where}: {decision.reason}"
 
 
