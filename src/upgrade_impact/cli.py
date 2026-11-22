@@ -13,7 +13,15 @@ from upgrade_impact import __version__
 from upgrade_impact.bump import BumpError
 from upgrade_impact.config import PROVIDERS, ConfigError, load_settings
 from upgrade_impact.models import Bump, Ecosystem
-from upgrade_impact.pipeline import CheckError, Target, run_check, target_from_diff, target_from_pr
+from upgrade_impact.pipeline import (
+    CheckError,
+    Target,
+    default_cache_dir,
+    run_check,
+    target_from_diff,
+    target_from_pr,
+)
+from upgrade_impact.providers.cache import CachingChat
 from upgrade_impact.providers.factory import build_chat
 from upgrade_impact.render import render_markdown, render_text
 from upgrade_impact.sources.github import GitHubClient, GitHubError, parse_pr_url, token_from_env
@@ -72,6 +80,14 @@ def _parser() -> argparse.ArgumentParser:
         help="skip claim extraction: show notes coverage and import sites only",
     )
     check.add_argument(
+        "--no-review",
+        action="store_true",
+        help="skip the step where the model reads each uncertain match in its code context",
+    )
+    check.add_argument(
+        "--no-cache", action="store_true", help="do not read or write the model reply cache"
+    )
+    check.add_argument(
         "--format", choices=("text", "markdown", "json"), default="text", help="output format"
     )
     check.add_argument("-o", "--output", type=Path, help="write the report here instead of stdout")
@@ -127,6 +143,8 @@ def _check(args: argparse.Namespace) -> int:
     try:
         target = _target(args, github)
         chat = None if args.no_llm else build_chat(settings)
+        if chat is not None and settings.llm_cache == "on" and not args.no_cache:
+            chat = CachingChat(chat, default_cache_dir(settings, os.environ) / "llm")
         report = run_check(
             target,
             chat=chat,
@@ -135,6 +153,7 @@ def _check(args: argparse.Namespace) -> int:
             settings=settings,
             repo=args.repo,
             import_names=args.import_names,
+            review=not args.no_review,
         )
     finally:
         github.close()

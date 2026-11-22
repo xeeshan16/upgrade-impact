@@ -2,7 +2,8 @@
 
 ``FakeChat`` answers extraction prompts with a keyword heuristic: note lines
 that say "removed", "renamed", "no longer", "breaking" and so on become claims,
-with backticked identifiers as symbols. Every summary starts with
+with backticked identifiers as symbols. It answers adjudication prompts with a
+name rule (see :func:`fake_decisions`). Every summary and reason starts with
 ``[fake provider]`` so its output can never be mistaken for a model's.
 """
 
@@ -68,6 +69,57 @@ def fake_claims(prompt: str) -> list[dict[str, Any]]:
     return claims
 
 
+ADJUDICATE_MARKER = "CANDIDATE CODE"  # mirrors upgrade_impact.adjudicate
+_CANDIDATE = re.compile(
+    r"^(K\d+): (\S+) line (\d+), resolved as (\S+) .*?\n<<<CODE \S+ \1>>>\n(.*?)\n<<<END CODE",
+    re.MULTILINE | re.DOTALL,
+)
+_CODE_LINE = re.compile(r"^\s*(\d+)\| ?(.*)$")
+_NAMES = re.compile(r"^Names involved: (.*)$", re.MULTILINE)
+
+
+def fake_decisions(prompt: str) -> list[dict[str, Any]]:
+    """Adjudicate with a rule: a candidate is affected when its symbol's last name
+    appears on the first cited note line, and unclear otherwise. The rule never
+    clears a candidate: telling ``Client(app=)`` from ``ASGITransport(app=)`` takes
+    a model."""
+    notes = NOTE_LINE.findall(prompt)
+    note_n, note_text = (int(notes[0][0]), notes[0][1]) if notes else (0, "")
+    names_match = _NAMES.search(prompt)
+    params = [
+        n.strip().rstrip("=")
+        for n in (names_match.group(1).split(",") if names_match else [])
+        if n.strip().endswith("=")
+    ]
+    decisions: list[dict[str, Any]] = []
+    for key, _path, line, symbol, body in _CANDIDATE.findall(prompt):
+        code = dict(
+            (int(m.group(1)), m.group(2))
+            for raw in body.splitlines()
+            if (m := _CODE_LINE.match(raw))
+        )
+        text = code.get(int(line), "").strip()
+        last = symbol.replace("/", ".").rsplit(".", 1)[-1]
+        if re.search(rf"\b{re.escape(last)}\b", note_text):
+            verdict, why = "affected", f"the note names {last}"
+        elif params and any(f"{p}=" in text or f"{p}:" in text for p in params):
+            verdict, why = "unclear", f"passes {', '.join(params)} but the note names no API"
+        else:
+            verdict, why = "unclear", "the rule cannot tell"
+        decisions.append(
+            {
+                "candidate": key,
+                "verdict": verdict,
+                "code_line": int(line),
+                "code_quote": text[:60],
+                "note_line": note_n,
+                "note_quote": note_text.strip().lstrip("-*• ")[:60],
+                "reason": f"[fake provider] {why}",
+            }
+        )
+    return decisions
+
+
 class FakeChat:
     """Keyword-heuristic stand-in for a model. Deterministic for a given prompt."""
 
@@ -92,6 +144,9 @@ class FakeChat:
         json_schema: Mapping[str, Any] | None = None,
     ) -> Completion:
         prompt = messages[-1].content if messages else ""
+        if ADJUDICATE_MARKER in prompt:
+            text = json.dumps({"decisions": fake_decisions(prompt)})
+            return Completion(text, self._model, _usage(messages, text), 0.0, "stop")
         claims = fake_claims(prompt)
         flagged = sorted({ev["line"] for claim in claims for ev in claim["evidence"]})
         text = json.dumps({"breaking_lines": flagged, "claims": claims})

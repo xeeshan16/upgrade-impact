@@ -241,3 +241,23 @@ def test_version_and_module_entry_point() -> None:
         check=True,
     )
     assert result.stdout.startswith("upgrade-impact ")
+
+
+def test_second_run_is_answered_from_the_cache(
+    services: Services, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = ("check", "https://github.com/owner/repo/pull/9", "--provider", "fake")
+    code, first, _ = run(capsys, *args)
+    assert code == 0
+    assert "from cache" not in first
+    assert "code review: fake fake-extractor" in first
+    code, second, _ = run(capsys, *args)
+    assert code == 0
+    assert "model: fake fake-extractor (fake provider: heuristic stand-in, not a model), " in second
+    assert "4 call(s) (4 from cache), 0 in / 0 out tokens" in second
+    assert "code review: fake fake-extractor" in second
+
+    code, uncached, _ = run(capsys, *args, "--no-cache", "--no-review")
+    assert code == 0
+    assert "from cache" not in uncached
+    assert "code review:" not in uncached

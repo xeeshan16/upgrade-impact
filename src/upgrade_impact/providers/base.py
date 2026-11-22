@@ -28,6 +28,7 @@ class Completion:
     usage: TokenUsage
     latency_s: float
     finish_reason: str | None = None
+    cached: bool = False
 
 
 class ProviderError(RuntimeError):

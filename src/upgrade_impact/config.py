@@ -4,7 +4,7 @@ Config file: ``.upgrade-impact.toml`` in the working directory, or the path in
 ``UPGRADE_IMPACT_CONFIG``. Keys mirror the environment variables without the
 ``UPGRADE_IMPACT_`` prefix, lower-cased (``provider``, ``model``, ``base_url``,
 ``timeout_s``, ``max_retries``, ``max_output_tokens``, ``repair_attempts``,
-``notes_budget_tokens``, ``cache_dir``).
+``notes_budget_tokens``, ``max_candidates``, ``llm_cache``, ``cache_dir``).
 """
 
 from __future__ import annotations
@@ -43,6 +43,10 @@ class Settings:
     # Release notes are split into chunks of about this many tokens; each chunk
     # is one extraction call. Small local models do better with short chunks.
     notes_budget_tokens: int = 3000
+    # Most code candidates per claim that the model reads in context.
+    max_candidates: int = 12
+    # "on" caches model replies on disk (temperature 0 makes them reproducible).
+    llm_cache: str = "on"
     cache_dir: str | None = None
     github_api_url: str = "https://api.github.com"
     github_raw_url: str = "https://raw.githubusercontent.com"
@@ -64,6 +68,10 @@ class Settings:
             raise ConfigError("notes_budget_tokens must be at least 500")
         if self.max_output_tokens < 256:
             raise ConfigError("max_output_tokens must be at least 256")
+        if not 0 <= self.max_candidates <= 200:
+            raise ConfigError("max_candidates must be between 0 and 200")
+        if self.llm_cache not in ("on", "off"):
+            raise ConfigError("llm_cache must be 'on' or 'off'")
         return self
 
 
@@ -76,6 +84,8 @@ _ENV_KEYS = {
     "max_output_tokens": "UPGRADE_IMPACT_MAX_OUTPUT_TOKENS",
     "repair_attempts": "UPGRADE_IMPACT_REPAIR_ATTEMPTS",
     "notes_budget_tokens": "UPGRADE_IMPACT_NOTES_BUDGET_TOKENS",
+    "max_candidates": "UPGRADE_IMPACT_MAX_CANDIDATES",
+    "llm_cache": "UPGRADE_IMPACT_LLM_CACHE",
     "cache_dir": "UPGRADE_IMPACT_CACHE_DIR",
     "github_api_url": "GITHUB_API_URL",
 }

@@ -7,7 +7,9 @@ from upgrade_impact.models import (
     ClaimResult,
     ClaimStatus,
     Ecosystem,
+    Match,
     MatchStrength,
+    ModelRun,
     Report,
 )
 
@@ -57,16 +59,42 @@ def _headline(report: BumpReport) -> str:
     return f"{total} breaking change(s): " + ", ".join(parts)
 
 
-def _model_line(report: BumpReport) -> str | None:
-    run = report.model
+def _run_line(label: str, run: ModelRun | None) -> str | None:
     if run is None:
         return None
     fake = " (fake provider: heuristic stand-in, not a model)" if run.provider == "fake" else ""
+    cached = f" ({run.cached_calls} from cache)" if run.cached_calls else ""
     return (
-        f"model: {run.provider} {run.model}{fake}, {run.calls} call(s), "
+        f"{label}: {run.provider} {run.model}{fake}, {run.calls} call(s){cached}, "
         f"{run.usage.input_tokens:,} in / {run.usage.output_tokens:,} out tokens, "
         f"{run.latency_s:.1f} s"
     )
+
+
+def _model_line(report: BumpReport) -> str | None:
+    return _run_line("model", report.model)
+
+
+def _review_line(report: BumpReport) -> str | None:
+    return _run_line("code review", report.adjudication)
+
+
+def _decision(match: Match) -> str | None:
+    decision = match.adjudication
+    if decision is None:
+        return None
+    cites = []
+    if decision.code_line is not None:
+        cites.append(f"code L{decision.code_line}")
+    if decision.note_line is not None:
+        cites.append(f"notes N{decision.note_line}")
+    where = f" [{', '.join(cites)}]" if cites else ""
+    if not decision.verified:
+        return (
+            f"model said {decision.verdict.value}, but its citations did not check out, "
+            f"so it counts as unclear: {decision.reason}"
+        )
+    return f"model: {decision.verdict.value}{where}: {decision.reason}"
 
 
 def _text_result(result: ClaimResult) -> list[str]:
@@ -84,8 +112,17 @@ def _text_result(result: ClaimResult) -> list[str]:
     for match in result.matches[:MAX_MATCHES_SHOWN]:
         usage = match.usage
         out.append(f"  {usage.path}:{usage.line}  {usage.snippet}  ({match.reason})")
+        if decision := _decision(match):
+            out.append(f"      {decision}")
     if len(result.matches) > MAX_MATCHES_SHOWN:
         out.append(f"  ... and {len(result.matches) - MAX_MATCHES_SHOWN} more")
+    for match in result.cleared[:MAX_MATCHES_SHOWN]:
+        usage = match.usage
+        out.append(f"  cleared {usage.path}:{usage.line}  {usage.snippet}")
+        if decision := _decision(match):
+            out.append(f"      {decision}")
+    if len(result.cleared) > MAX_MATCHES_SHOWN:
+        out.append(f"  ... and {len(result.cleared) - MAX_MATCHES_SHOWN} more cleared")
     return out
 
 
@@ -138,9 +175,9 @@ def render_text(report: Report) -> str:
         for result in bump_report.results:
             out.extend(_text_result(result))
         out.extend(_text_uncovered(bump_report))
-        model = _model_line(bump_report)
-        if model:
-            out.extend(["", model])
+        lines = [line for line in (_model_line(bump_report), _review_line(bump_report)) if line]
+        if lines:
+            out.extend(["", *lines])
         out.extend(f"warning: {warning}" for warning in bump_report.warnings)
         out.append("")
     out.extend(f"note: {warning}" for warning in report.warnings)
@@ -173,8 +210,17 @@ def render_markdown(report: Report) -> str:
                     _imports_summary(result)
                     if _imports_only(result)
                     else "<br>".join(
-                        f"`{m.usage.path}:{m.usage.line}` {m.reason}"
-                        for m in result.matches[:MAX_MATCHES_SHOWN]
+                        [
+                            *(
+                                f"`{m.usage.path}:{m.usage.line}` {m.reason}"
+                                + (f" — {d}" if (d := _decision(m)) else "")
+                                for m in result.matches[:MAX_MATCHES_SHOWN]
+                            ),
+                            *(
+                                f"cleared `{m.usage.path}:{m.usage.line}` — {_decision(m)}"
+                                for m in result.cleared[:MAX_MATCHES_SHOWN]
+                            ),
+                        ]
                     )
                     or "—"
                 )
@@ -193,10 +239,10 @@ def render_markdown(report: Report) -> str:
             for note in bump_report.uncovered[:MAX_MATCHES_SHOWN]:
                 out.append(f"- N{note.n} ({note.version}): {note.text.strip()}")
             out.append("")
-        model = _model_line(bump_report)
-        if model:
-            out.append(f"<sub>{model}</sub>")
-            out.append("")
+        for line in (_model_line(bump_report), _review_line(bump_report)):
+            if line:
+                out.append(f"<sub>{line}</sub>")
+                out.append("")
         for warning in bump_report.warnings:
             out.append(f"> {warning}")
         out.append("")

@@ -18,12 +18,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from upgrade_impact.config import load_settings
-from upgrade_impact.models import ClaimStatus, MatchStrength, Report
+from upgrade_impact.models import ClaimStatus, Match, MatchStrength, Report, Verdict
 from upgrade_impact.pipeline import run_check, target_from_pr
 from upgrade_impact.providers.factory import build_chat
 from upgrade_impact.render import render_text
 from upgrade_impact.sources.github import GitHubClient, parse_pr_url, token_from_env
 from upgrade_impact.sources.registry import RegistryClient
+
+Place = tuple[str, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,17 +55,30 @@ CASES = [
 ]
 
 
-def _hits(report: Report, strengths: set[MatchStrength]) -> list[tuple[str, int]]:
-    return sorted(
-        {
-            (m.usage.path, m.usage.line)
-            for bump in report.bumps
-            for result in bump.results
-            if result.status in (ClaimStatus.AFFECTED, ClaimStatus.POSSIBLE)
-            for m in result.matches
-            if m.strength in strengths
-        }
-    )
+def _confirmed(match: Match) -> bool:
+    if match.adjudication is not None:
+        return match.adjudication.effective == Verdict.AFFECTED
+    return match.strength == MatchStrength.DIRECT
+
+
+def _lines(report: Report) -> tuple[list[Place], list[Place], list[Place]]:
+    """Affected (direct or model-confirmed), still-possible and model-cleared lines."""
+    affected: set[Place] = set()
+    possible: set[Place] = set()
+    cleared: set[Place] = set()
+    for bump in report.bumps:
+        for result in bump.results:
+            cleared.update((m.usage.path, m.usage.line) for m in result.cleared)
+            if result.status not in (ClaimStatus.AFFECTED, ClaimStatus.POSSIBLE):
+                continue
+            for m in result.matches:
+                if m.strength == MatchStrength.IMPORT and m.adjudication is None:
+                    continue
+                place = (m.usage.path, m.usage.line)
+                (affected if _confirmed(m) else possible).add(place)
+    possible -= affected
+    cleared -= affected | possible
+    return sorted(affected), sorted(possible), sorted(cleared)
 
 
 def main() -> int:
@@ -81,9 +96,9 @@ def main() -> int:
     rows = [
         f"## upgrade-impact on real Dependabot PRs ({chat.provider} `{chat.model}`)",
         "",
-        "| PR | verdict | affected lines | possible lines | expected (human fix) | found "
-        "| claims (dropped) | model time | tokens in/out |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| PR | verdict | affected lines | possible lines | cleared by review | expected "
+        "(human fix) | found | claims (dropped) | model time | tokens in/out |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     summary = []
     for index, case in enumerate(CASES, start=1):
@@ -98,21 +113,24 @@ def main() -> int:
         text = render_text(report)
         (args.out / f"case-{index}.txt").write_text(text, encoding="utf-8")
         (args.out / f"case-{index}.json").write_text(report.model_dump_json(indent=2))
-        direct = _hits(report, {MatchStrength.DIRECT})
-        hits = _hits(report, {MatchStrength.DIRECT, MatchStrength.SYMBOL})
-        possible = [h for h in hits if h not in direct]
+        direct, possible, cleared = _lines(report)
+        hits = direct + possible
         found = all(e in hits for e in case.expected) if case.expected else not direct
         [bump] = report.bumps
-        run = bump.model
-        tokens = f"{run.usage.input_tokens:,}/{run.usage.output_tokens:,}" if run else "-"
+        run, review = bump.model, bump.adjudication
+        tokens_in = sum(r.usage.input_tokens for r in (run, review) if r)
+        tokens_out = sum(r.usage.output_tokens for r in (run, review) if r)
+        tokens = f"{tokens_in:,}/{tokens_out:,}" if run else "-"
         expected = ", ".join(f"`{p}:{n}`" for p, n in case.expected) or "none"
         shown = ", ".join(f"`{p}:{n}`" for p, n in direct) or "none"
         maybe = ", ".join(f"`{p}:{n}`" for p, n in possible[:6]) or "none"
+        gone = ", ".join(f"`{p}:{n}`" for p, n in cleared[:6]) or "none"
         claims = f"{len(bump.results)} ({bump.claims_dropped})" if run else "-"
-        latency = f"{run.latency_s:.0f} s" if run else f"{elapsed:.0f} s"
+        model_s = sum(r.latency_s for r in (run, review) if r)
+        latency = f"{model_s:.0f} s" if run else f"{elapsed:.0f} s"
         rows.append(
-            f"| [{case.name}]({case.pr}) | {bump.verdict} | {shown} | {maybe} | {expected} | "
-            f"{'yes' if found else 'no'} | {claims} | {latency} | {tokens} |"
+            f"| [{case.name}]({case.pr}) | {bump.verdict} | {shown} | {maybe} | {gone} | "
+            f"{expected} | {'yes' if found else 'no'} | {claims} | {latency} | {tokens} |"
         )
         summary.append(
             {
@@ -122,6 +140,7 @@ def main() -> int:
                 "verdict": bump.verdict,
                 "affected_lines": direct,
                 "possible_lines": possible,
+                "cleared_lines": cleared,
                 "expected": case.expected,
                 "found": found,
                 "label": case.label,

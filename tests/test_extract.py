@@ -55,6 +55,9 @@ def test_prompt_numbers_lines_and_fences_them(fixtures: Path) -> None:
     prompt, nonce = build_prompt(BUMP, notes, [line.n for line in notes.lines])
     assert f"<<<NOTES {nonce}>>>" in prompt
     assert f"<<<END NOTES {nonce}>>>" in prompt
+    # Same notes, same fence (so replies can be cached); different notes, different fence.
+    assert build_prompt(BUMP, notes, [line.n for line in notes.lines])[1] == nonce
+    assert build_prompt(BUMP, notes, [notes.lines[0].n])[1] != nonce
     n = _line_of(notes, "`proxies` argument")
     assert f"N{n}: * The deprecated `proxies` argument has now been removed." in prompt
     assert "=== version 0.28.0 ===" in prompt

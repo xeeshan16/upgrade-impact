@@ -9,10 +9,10 @@ as ``unverified_symbols`` so they never drive code matching.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
-import secrets
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -114,9 +114,24 @@ _FENCE_CHARS = re.compile(r"[`*_~>#\[\]()\"'“”‘’]")  # noqa: RUF001 - cu
 _IDENT = re.compile(r"[A-Za-z_][\w$]*")
 
 
+def fence_nonce(*parts: str) -> str:
+    """A fence marker derived from the fenced content itself.
+
+    Text inside the fence cannot close it early: to forge the end marker it
+    would have to contain the hash of a text that contains that hash. Being
+    deterministic, it also keeps identical prompts identical, so model
+    replies can be cached.
+    """
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(part.encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:12]
+
+
 def build_prompt(bump: Bump, notes: ReleaseNotes, line_numbers: Sequence[int]) -> tuple[str, str]:
     """The user prompt for one chunk, and the fence nonce used in it."""
-    nonce = secrets.token_hex(6)
+    nonce = fence_nonce(*(notes.lines[n - 1].text for n in line_numbers))
     out = [
         f"Package: {bump.package} ({bump.ecosystem.value})",
         f"Upgrade: {bump.from_version or 'unknown'} -> {bump.to_version}",
@@ -139,7 +154,7 @@ def build_prompt(bump: Bump, notes: ReleaseNotes, line_numbers: Sequence[int]) -
     return "\n".join(out), nonce
 
 
-def _normalise(text: str) -> str:
+def normalise(text: str) -> str:
     text = _FENCE_CHARS.sub(" ", text.lower())
     return re.sub(r"\s+", " ", text).strip()
 
@@ -153,21 +168,21 @@ def _quote_on_line(notes: ReleaseNotes, line: int, wanted: str) -> bool:
     target = notes.line(line)
     if target is None:
         return False
-    if wanted in _normalise(target.text):
+    if wanted in normalise(target.text):
         return True
     following = notes.line(line + 1)
     if following is None or following.version != target.version:
         return False
-    if wanted in _normalise(following.text):
+    if wanted in normalise(following.text):
         return False  # entirely on the next line: that line is the citation
-    return wanted in _normalise(f"{target.text} {following.text}")
+    return wanted in normalise(f"{target.text} {following.text}")
 
 
 def locate_quote(notes: ReleaseNotes, line: int, quote: str) -> int | None:
     """The note line that holds ``quote``: the cited line, else the nearest within
     ``NEARBY_LINES``. ``None`` when the quote is not there (or too short to prove anything).
     """
-    wanted = _normalise(_QUOTE_PREFIX.sub("", quote))
+    wanted = normalise(_QUOTE_PREFIX.sub("", quote))
     if len(wanted) < 4:
         return None
     for offset in (0, *(d for k in range(1, NEARBY_LINES + 1) for d in (-k, k))):
@@ -282,7 +297,7 @@ def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim]
     return kept, dropped
 
 
-def _json_object(text: str) -> Any:
+def json_object(text: str) -> Any:
     text = text.strip()
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if fenced:
@@ -296,7 +311,7 @@ def _json_object(text: str) -> Any:
         raise
 
 
-def _line_number(value: Any) -> int | None:
+def line_number(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     if isinstance(value, str):
@@ -323,7 +338,7 @@ def parse_claims(text: str) -> tuple[list[Claim], int]:
 
 def parse_reply(text: str) -> Reply:
     """The whole reply: claims, malformed-claim count and the lines the model flagged."""
-    data = _json_object(text)
+    data = json_object(text)
     if isinstance(data, list):
         data = {"claims": data}
     if not isinstance(data, dict):
@@ -346,7 +361,7 @@ def parse_reply(text: str) -> Reply:
         for ev in raw_evidence if isinstance(raw_evidence, list) else []:
             if not isinstance(ev, dict):
                 continue
-            number = _line_number(ev.get("line"))
+            number = line_number(ev.get("line"))
             if number is not None:
                 evidence.append(Evidence(line=number, quote=str(ev.get("quote") or "")))
         kind = str(item.get("kind") or "other").strip().lower().replace(" ", "_")
@@ -368,7 +383,7 @@ def parse_reply(text: str) -> Reply:
     raw_lines = data.get("breaking_lines")
     flagged = [
         n
-        for n in (_line_number(v) for v in (raw_lines if isinstance(raw_lines, list) else []))
+        for n in (line_number(v) for v in (raw_lines if isinstance(raw_lines, list) else []))
         if n is not None
     ]
     return Reply(claims=claims, invalid=invalid, breaking_lines=flagged)
@@ -395,13 +410,13 @@ def attach_flagged_evidence(
         if claim.evidence:
             out.append(claim)
             continue
-        summary = _normalise(claim.summary)
+        summary = normalise(claim.summary)
         hits: list[int] = []
         for n in flagged:
             line = notes.line(n)
             if line is None:
                 continue
-            text = _normalise(line.text)
+            text = normalise(line.text)
             if any(
                 re.search(rf"(?<!\w){re.escape(name.lower())}(?!\w)", text)
                 for name in _names(claim)
@@ -435,21 +450,31 @@ class Extraction:
     dropped_claims: list[Claim] = field(default_factory=list)
 
 
-def _complete(
-    chat: ChatModel, messages: list[Message], run: ModelRun, max_output_tokens: int
+def call_json(
+    chat: ChatModel,
+    messages: list[Message],
+    run: ModelRun,
+    max_output_tokens: int,
+    schema: dict[str, Any],
 ) -> Completion | ProviderError:
-    """One extraction call, with its usage added to ``run``."""
+    """One JSON call at temperature 0, with its usage added to ``run``.
+
+    Cache hits count as calls but add no tokens or latency.
+    """
     try:
         completion = chat.complete(
             messages,
             max_tokens=max_output_tokens,
             temperature=0.0,
             json_mode=True,
-            json_schema=CLAIMS_SCHEMA,
+            json_schema=schema,
         )
     except ProviderError as exc:
         return exc
     run.calls += 1
+    if completion.cached:
+        run.cached_calls += 1
+        return completion
     run.usage = run.usage + TokenUsage(
         input_tokens=completion.usage.input_tokens,
         output_tokens=completion.usage.output_tokens,
@@ -479,7 +504,7 @@ def extract_claims(
         repairs_left = repair_attempts
         nudged = False
         while True:
-            completion = _complete(chat, messages, run, max_output_tokens)
+            completion = call_json(chat, messages, run, max_output_tokens, CLAIMS_SCHEMA)
             if isinstance(completion, ProviderError):
                 warnings.append(
                     f"model call failed for notes lines {chunk[0]}-{chunk[-1]}: {completion}"

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from upgrade_impact.adjudicate import SourceFiles, adjudicate
 from upgrade_impact.bump import FileDiff, patch_lines, resolve_bumps, split_unified_diff
 from upgrade_impact.config import Settings
 from upgrade_impact.extract import extract_claims, uncovered_lines
@@ -151,6 +152,7 @@ def check_bump(
     github: GitHubClient,
     settings: Settings,
     import_names: list[str] | None = None,
+    review: bool = True,
 ) -> BumpReport:
     report = BumpReport(bump=bump)
     try:
@@ -195,6 +197,20 @@ def check_bump(
     report.dropped_claims = extraction.dropped_claims
     report.warnings.extend(extraction.warnings)
     report.results = match_claims(extraction.claims, usages, names)
+    if review and settings.max_candidates > 0:
+        outcome = adjudicate(
+            chat,
+            bump,
+            notes,
+            report.results,
+            usages=usages,
+            files=SourceFiles(code_root),
+            max_candidates=settings.max_candidates,
+            max_output_tokens=settings.max_output_tokens,
+        )
+        if outcome.run.calls:
+            report.adjudication = outcome.run
+        report.warnings.extend(outcome.warnings)
     report.uncovered = [
         line
         for n in uncovered_lines(notes, extraction.claims)
@@ -213,6 +229,7 @@ def run_check(
     repo: Path | None = None,
     import_names: list[str] | None = None,
     env: Mapping[str, str] | None = None,
+    review: bool = True,
 ) -> Report:
     env = os.environ if env is None else env
     if not target.bumps:
@@ -235,6 +252,7 @@ def run_check(
                 github=github,
                 settings=settings,
                 import_names=import_names,
+                review=review,
             )
         )
     return report

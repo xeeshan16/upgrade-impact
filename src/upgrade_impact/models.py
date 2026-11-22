@@ -161,10 +161,39 @@ class MatchStrength(StrEnum):
     IMPORT = "import"
 
 
+class Verdict(StrEnum):
+    AFFECTED = "affected"
+    NOT_AFFECTED = "not_affected"
+    UNCLEAR = "unclear"
+
+
+class Adjudication(BaseModel):
+    """The model's reading of one candidate, with both citations checked."""
+
+    verdict: Verdict
+    reason: str
+    code_line: int | None = None
+    code_quote: str = ""
+    code_verified: bool = False
+    note_line: int | None = None
+    note_quote: str = ""
+    note_verified: bool = False
+
+    @property
+    def verified(self) -> bool:
+        return self.code_verified and self.note_verified
+
+    @property
+    def effective(self) -> Verdict:
+        """A verdict only counts when both citations were found; otherwise it is unclear."""
+        return self.verdict if self.verified else Verdict.UNCLEAR
+
+
 class Match(BaseModel):
     usage: Usage
     strength: MatchStrength
     reason: str
+    adjudication: Adjudication | None = None
 
 
 class ClaimStatus(StrEnum):
@@ -178,6 +207,10 @@ class ClaimResult(BaseModel):
     claim: Claim
     status: ClaimStatus
     matches: list[Match] = Field(default_factory=list)
+    cleared: list[Match] = Field(
+        default_factory=list,
+        description="Candidates the model judged not affected, with verified citations.",
+    )
 
 
 class TokenUsage(BaseModel):
@@ -199,6 +232,7 @@ class ModelRun(BaseModel):
     provider: str
     model: str
     calls: int = 0
+    cached_calls: int = Field(default=0, description="Calls answered from the on-disk cache.")
     usage: TokenUsage = Field(default_factory=TokenUsage)
     latency_s: float = 0.0
 
@@ -231,6 +265,9 @@ class BumpReport(BaseModel):
     )
     index: IndexStats = Field(default_factory=IndexStats)
     model: ModelRun | None = None
+    adjudication: ModelRun | None = Field(
+        default=None, description="Model calls that read candidate code lines."
+    )
     warnings: list[str] = Field(default_factory=list)
 
     def count(self, status: ClaimStatus) -> int:
