@@ -162,8 +162,8 @@ def test_diff_from_stdin_and_file(
     assert json.loads(output.read_text())["source"] == str(path)
 
 
-def test_npm_bump_reports_that_js_is_not_indexed_yet(
-    services: Services, capsys: pytest.CaptureFixture[str], tmp_path: Path
+def test_npm_bump_indexes_javascript_and_typescript(
+    services: Services, capsys: pytest.CaptureFixture[str], fixtures: Path
 ) -> None:
     code, out, _ = run(
         capsys,
@@ -176,11 +176,15 @@ def test_npm_bump_reports_that_js_is_not_indexed_yet(
         "4.21.2",
         "--to",
         "5.0.1",
+        "--repo",
+        str(fixtures / "repos" / "jsapp"),
+        "--import-name",
+        "axios",
         "--no-llm",
     )
     assert code == 0
     assert "express 4.21.2 -> 5.0.1 (npm)" in out
-    assert "not indexed yet" in out
+    assert "in 4 file(s); 4 JavaScript/TypeScript file(s) scanned" in out
 
 
 @pytest.mark.parametrize(

@@ -40,8 +40,12 @@ def _components(symbol: str, import_names: Iterable[str]) -> list[str]:
 
     The package prefix and private modules are dropped.
     """
-    text = symbol.replace("::", ".").replace("#", ".").replace("/", ".")
-    for prefix in sorted(import_names, key=len, reverse=True):
+
+    def dotted(name: str) -> str:
+        return name.replace("::", ".").replace("#", ".").replace("/", ".")
+
+    text = dotted(symbol)
+    for prefix in sorted((dotted(n) for n in import_names), key=len, reverse=True):
         if text == prefix:
             return []
         if text.startswith(f"{prefix}."):

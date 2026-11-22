@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from upgrade_impact.models import BumpReport, ClaimResult, ClaimStatus, MatchStrength, Report
+from upgrade_impact.models import (
+    BumpReport,
+    ClaimResult,
+    ClaimStatus,
+    Ecosystem,
+    MatchStrength,
+    Report,
+)
 
 MAX_MATCHES_SHOWN = 8
+
+_LANGUAGE = {Ecosystem.PYPI: "Python", Ecosystem.NPM: "JavaScript/TypeScript"}
 
 _VERDICT_TEXT = {
     "affected": "AFFECTED: at least one breaking change reaches your code",
@@ -110,7 +119,8 @@ def _text_header(report: BumpReport) -> list[str]:
         f"upgrade-impact: {bump.label}",
         notes,
         f"code: {idx.usages} usage(s) of {', '.join(idx.import_names) or bump.package} "
-        f"in {idx.files_importing} file(s); {idx.files_scanned} Python file(s) scanned",
+        f"in {idx.files_importing} file(s); "
+        f"{idx.files_scanned} {_LANGUAGE[bump.ecosystem]} file(s) scanned",
         _VERDICT_TEXT[report.verdict],
         _headline(report),
     ]
