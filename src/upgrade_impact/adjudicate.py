@@ -408,6 +408,19 @@ def _apply_possible(result: ClaimResult, reviewed: dict[int, Adjudication]) -> N
         result.status = ClaimStatus.NOT_FOUND
 
 
+def _candidate_pool(
+    result: ClaimResult, notes: ReleaseNotes, usages: Sequence[Usage]
+) -> list[Match]:
+    """What the model should read: the uncertain matches, or for a claim that names
+    nothing, every call into the package ranked by overlap with the change."""
+    if result.status == ClaimStatus.NEEDS_REVIEW:
+        return [
+            Match(usage=u, strength=MatchStrength.IMPORT, reason="calls into the package")
+            for u in rank_usages(result.claim, notes, usages)
+        ]
+    return [m for m in result.matches if m.strength != MatchStrength.DIRECT]
+
+
 @dataclass(slots=True)
 class _Session:
     chat: ChatModel
@@ -428,25 +441,29 @@ def adjudicate(
     max_candidates: int = 12,
     batch_size: int = 6,
     max_output_tokens: int = 2048,
+    max_calls: int = 8,
 ) -> AdjudicationOutcome:
-    """Review uncertain candidates in place. Returns the model usage and any warnings."""
+    """Review uncertain candidates in place. Returns the model usage and any warnings.
+
+    Claims are taken in report order ("possible" before "needs review"), and at
+    most ``max_calls`` uncached model calls are made per bump; candidates left
+    over keep their deterministic status.
+    """
     outcome = AdjudicationOutcome(run=ModelRun(provider=chat.provider, model=chat.model))
     session = _Session(chat, bump, notes, max_output_tokens, outcome)
+    run = outcome.run
+    skipped = 0
     for result in results:
         if not _needs_model(result):
+            continue
+        if run.calls - run.cached_calls >= max_calls:
+            skipped += 1
             continue
         claim = result.claim
         note_lines = note_context(notes, claim)
         if not note_lines:
             continue
-        if result.status == ClaimStatus.NEEDS_REVIEW:
-            ranked = rank_usages(claim, notes, usages)
-            pool = [
-                Match(usage=u, strength=MatchStrength.IMPORT, reason="calls into the package")
-                for u in ranked
-            ]
-        else:
-            pool = [m for m in result.matches if m.strength != MatchStrength.DIRECT]
+        pool = _candidate_pool(result, notes, usages)
         selected = pool[:max_candidates]
         exhaustive = len(selected) == len(pool)
         candidates = [
@@ -461,6 +478,13 @@ def adjudicate(
             )
         reviewed: dict[int, Adjudication] = {}
         for start in range(0, len(candidates), batch_size):
+            if run.calls - run.cached_calls >= max_calls:
+                exhaustive = False
+                outcome.warnings.append(
+                    f"{claim.id}: review budget used up after {start} of "
+                    f"{len(candidates)} candidates"
+                )
+                break
             batch = candidates[start : start + batch_size]
             reviewed.update(_review_batch(session, claim, note_lines, batch))
         if result.status == ClaimStatus.NEEDS_REVIEW:
@@ -471,6 +495,11 @@ def adjudicate(
             outcome.warnings.append(
                 f"{claim.id}: the model reviewed {max_candidates} of {len(pool)} candidates"
             )
+    if skipped:
+        outcome.warnings.append(
+            f"review budget of {max_calls} model call(s) used up; {skipped} claim(s) were not "
+            "reviewed (raise UPGRADE_IMPACT_MAX_REVIEW_CALLS)"
+        )
     order = {
         ClaimStatus.AFFECTED: 0,
         ClaimStatus.POSSIBLE: 1,

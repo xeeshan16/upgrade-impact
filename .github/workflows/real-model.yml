@@ -56,7 +56,7 @@ jobs:
       - run: ollama pull "$MODEL"
       - name: real demo PRs
         run: |
-          uv run python scripts/demo_report.py --model "$MODEL" --out "reports/${MODEL//:/-}"
+          uv run python -u scripts/demo_report.py --model "$MODEL" --out "reports/${MODEL//:/-}"
           cat "reports/${MODEL//:/-}/report.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()

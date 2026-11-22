@@ -447,3 +447,27 @@ def test_helpers() -> None:
         update={"evidence": [Evidence(line=4, quote="x", verified=False)]}
     )
     assert note_context(NOTES, unverified) == []
+
+
+def test_review_budget_caps_model_calls_per_bump(repo: Path) -> None:
+    results, usages = _results(repo, [app_claim(), behaviour_claim()])
+    reply = json.dumps({"decisions": [_decision("K1", "unclear", 5, "AsyncClient(app=app")]})
+    outcome = adjudicate(
+        ScriptedChat([reply]),
+        BUMP,
+        NOTES,
+        results,
+        usages=usages,
+        files=SourceFiles(repo),
+        batch_size=1,
+        max_calls=1,
+    )
+    assert outcome.run.calls == 1
+    assert outcome.warnings == [
+        "C1: review budget used up after 1 of 2 candidates",
+        "review budget of 1 model call(s) used up; 1 claim(s) were not reviewed "
+        "(raise UPGRADE_IMPACT_MAX_REVIEW_CALLS)",
+    ]
+    by_id = {r.claim.id: r for r in results}
+    assert by_id["C1"].status == ClaimStatus.POSSIBLE
+    assert by_id["C2"].status == ClaimStatus.NEEDS_REVIEW

@@ -207,6 +207,7 @@ def check_bump(
             files=SourceFiles(code_root),
             max_candidates=settings.max_candidates,
             max_output_tokens=settings.max_output_tokens,
+            max_calls=settings.max_review_calls,
         )
         if outcome.run.calls:
             report.adjudication = outcome.run
