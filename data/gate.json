@@ -1,0 +1,13 @@
+{
+  "description": "CI gate for 'upgrade-impact eval --split dev --provider fake'. The fake provider is a keyword heuristic, so these checks guard the pipeline and the dataset (every case scored, no system crashing, the snapshot export finding the importing files, the tool not flagging clean bumps wholesale), not model quality.",
+  "checks": [
+    {"summary": "cases_scored", "min": 115},
+    {"system": "upgrade-impact", "mode": "totals", "metric": "errors", "max": 0},
+    {"system": "import-grep", "mode": "totals", "metric": "errors", "max": 0},
+    {"system": "symbol-grep", "mode": "totals", "metric": "errors", "max": 0},
+    {"system": "naive-prompt", "mode": "totals", "metric": "errors", "max": 0},
+    {"system": "import-grep", "mode": "strict", "metric": "file_recall", "min": 0.5},
+    {"system": "upgrade-impact", "mode": "strict", "metric": "false_alarm_rate", "max": 0.25},
+    {"system": "upgrade-impact", "mode": "lenient", "metric": "false_alarm_rate", "max": 0.4}
+  ]
+}
