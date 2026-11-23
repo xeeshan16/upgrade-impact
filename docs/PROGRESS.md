@@ -170,3 +170,64 @@ commits as labels, clean merges as no-impact), splits by repo, the import-grep,
 symbol-grep and naive-prompt baselines, and `upgrade-impact eval` with
 precision/recall, false-alarm rate and bootstrap CIs, with and without review.
 
+
+## Day 3 — 2026-11-23: dataset and eval harness
+
+Built:
+
+- `upgrade-impact mine`: scans the first-parent history of public
+  repositories (bare partial clones over HTTPS, no token) for merged
+  Dependabot/Renovate PRs. Merge commits give the PR's own commits; bot-authored
+  squash merges give human `Co-authored-by` trailers. A human commit that
+  changed an existing source file makes an impact case, labelled with the
+  old-side hunks in the snapshot (the bot's commit, or the squash's parent);
+  a bot-only, manifest-only PR is a no-impact case unless a later human commit
+  names the package or reverts it. Majors and 0.x minors of imported packages
+  only; at most 6 clean cases per repository; split by repository (ADR 0003).
+- `data/cases.jsonl`: 154 repositories scanned, 51 contributed. 259 cases:
+  dev 23 impact + 97 no-impact (22 repositories), test 38 + 101
+  (29 repositories). 46 of the 61 impact cases are squash merges with a human
+  co-author. The `httpx` 0.28 case from day 1 (`fastapi-pagination#1373`) came
+  out of the miner with the same label (`tests/conftest.py:271`, plus the
+  import line the maintainer also changed).
+- `upgrade-impact eval`: the tool, import-grep, symbol-grep and a naive single
+  prompt on the same snapshot and the same cached notes; file and line
+  precision/recall, detection, false alarms, strict and lenient scoring,
+  repository-level bootstrap intervals, call and token totals, per-case
+  predictions in `cases.jsonl`, `--gate`, `--per-label` sampling.
+- CI: an eval job on the dev split with the fake provider, gated by
+  `data/gate.json` (every case scored, no system errors, sanity floors); the
+  installed wheel runs a two-case eval. The `real-model` workflow takes
+  `eval_per_label` to run the eval with Ollama on a fixed dev sample.
+
+Found while building:
+
+- The first miner pass labelled `github/codeql-action` bumps with ~1,000-hunk
+  changes to `lib/*.js`: the repository commits its compiled bundle. Fix files
+  with more than 40 hunks or 300 changed lines are now dropped as generated.
+- Impact cases are rare: across 154 active repositories only 61 bumps had a
+  human push a fix onto the bot's PR. Many large projects (fastapi, pydantic-ai,
+  moto, kombu) had none; maintainers there fix in separate PRs, which this
+  miner cannot see. The set over-represents projects that fix on the bot's
+  branch.
+- Release notes are the bottleneck for "unknown" answers: in the build sandbox
+  (no GitHub API) most cases had no notes; in CI, with GitHub Releases, 3 of 23
+  dev impact cases and 11 of 97 clean ones still had none (packages without a
+  GitHub repository in their registry metadata, or without releases or a
+  CHANGELOG).
+- Measured in CI on the dev split
+  ([run 45184488973](https://github.com/xeeshan16/upgrade-impact/actions/runs/45184488973)),
+  no model involved: import-grep detects 91.3% (81-100) of impact cases with
+  63.5% file recall, but flags 100% of clean bumps and 10.5 lines per case;
+  symbol-grep detects 26.1% (12-38) with 37.0% file precision and 23.7%
+  (14-34) false alarms. The fake provider's numbers for upgrade-impact and the
+  naive prompt are pipeline checks, not results.
+- A real-model eval on a dev sample (4 impact + 4 clean cases, qwen2.5:7b,
+  at most 3 review calls per bump) was started in the `real-model` workflow;
+  its numbers go into tomorrow's entry.
+
+Next (day 4): treat release notes as untrusted input (fencing is in place;
+injection checks and output validation), slice long changelogs by version,
+follow migration-guide links, the deprecation-history context for the
+govbr_auth false alarms, and calibrate "no impact", each measured on the dev
+split with a real model.

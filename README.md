@@ -6,9 +6,10 @@ breaking-change claims with a language model, finds the lines in your repository
 that use what changed, and cites both sides: a release-note line and a code line,
 each verified by code. If nothing is affected, it says so and tells you why.
 
-> **Status: day 2 of 7.** Works end to end for PyPI and npm bumps on Python and
-> JavaScript/TypeScript code, with a model review of borderline matches. The eval
-> on real PRs, the GitHub Action and the MCP server are the next milestones
+> **Status: day 3 of 7.** Works end to end for PyPI and npm bumps on Python and
+> JavaScript/TypeScript code, with a model review of borderline matches, and
+> ships an eval harness with a dataset of 259 real bump PRs. Real-model eval
+> numbers, the GitHub Action and the MCP server are the next milestones
 > ([plan](docs/PLAN.md), [progress](docs/PROGRESS.md)).
 
 ## What it does
@@ -69,8 +70,8 @@ is planned for day 4.
 
 Both outputs are from the [`real-model` workflow](.github/workflows/real-model.yml)
 ([run 45027489304](https://github.com/xeeshan16/upgrade-impact/actions/runs/45027489304),
-commit `5501a54`). These are two hand-picked PRs, not an evaluation; the labelled
-dataset and baselines come on day 3.
+commit `5501a54`). These are two hand-picked PRs, not an evaluation; see
+[Evaluation](#evaluation) for the labelled dataset and baselines.
 
 ## Quick start (5 minutes)
 
@@ -144,6 +145,55 @@ flowchart LR
    [ADR 0002](docs/adr/0002-model-review-of-candidates-with-two-sided-citations.md).
    Replies are cached on disk, so a re-run costs nothing.
 
+## Evaluation
+
+Does it beat grep? `upgrade-impact eval` answers that on real PRs.
+
+**Dataset** ([data/](data/README.md)): 259 merged Dependabot and Renovate PRs
+from 51 public repositories, mined from git history by `upgrade-impact mine`.
+61 are *impact* cases: a maintainer pushed code onto the bump PR, and the lines
+they changed are the labels. 198 merged with manifest changes only. Only majors
+(or 0.x minors) of packages the code imports count, and the dev and held-out
+test splits never share a repository
+([ADR 0003](docs/adr/0003-labels-from-human-follow-up-commits.md)).
+
+**Systems**, all on the same code snapshot and the same cached release notes:
+
+| System | What it flags |
+|---|---|
+| `upgrade-impact` | affected lines (strict), plus "possible" ones (lenient) |
+| `import-grep` | every line that imports the package |
+| `symbol-grep` | identifiers quoted on breaking-looking note lines, grepped in importing files |
+| `naive-prompt` | one model call with the notes and the importing files, no verification |
+
+**Metrics**: file precision and recall, hunk recall (a predicted line within
+two lines of a fixed hunk), detection (impact cases with at least one right
+file), false alarms (clean bumps with anything flagged), lines flagged per
+case, model calls and tokens. 95% intervals resample repositories.
+
+```bash
+uv run upgrade-impact eval data/cases.jsonl --split dev --model qwen2.5:7b
+uv run upgrade-impact eval data/cases.jsonl --split dev --no-llm   # grep baselines only
+```
+
+**Measured so far** (dev split, 120 cases from 22 repositories, release notes
+from GitHub Releases and CHANGELOGs,
+[CI run 45184488973](https://github.com/xeeshan16/upgrade-impact/actions/runs/45184488973)),
+the two baselines that need no model:
+
+| System | File precision | File recall | Detected | False alarms | Lines/case |
+|---|---|---|---|---|---|
+| import-grep | 8.3% (3-47) | 63.5% (35-100) | 91.3% (81-100) | 100% | 10.5 |
+| symbol-grep | 37.0% (17-59) | 19.2% (5-35) | 26.1% (12-38) | 23.7% (14-34) | 11.9 |
+
+That is the bar: grepping imports finds most broken files but flags every clean
+bump (every case's package is imported somewhere, by construction), and grepping
+the notes' identifiers misses about three impact cases in four. upgrade-impact
+and the naive prompt have no real-model numbers yet; CI runs them with the
+fake provider only to keep the pipeline honest (`data/gate.json`). Real-model
+runs on the dev split are next; the held-out test split is scored once, on
+day 7.
+
 ## Configuration
 
 | Setting | Env var | Default |
@@ -155,7 +205,8 @@ flowchart LR
 | timeout / retries | `UPGRADE_IMPACT_TIMEOUT_S`, `UPGRADE_IMPACT_MAX_RETRIES` | `300`, `3` |
 | review cap | `UPGRADE_IMPACT_MAX_CANDIDATES`, `UPGRADE_IMPACT_MAX_REVIEW_CALLS` | `12` code candidates per claim, `8` uncached review calls per bump (`--no-review` turns review off) |
 | reply cache | `UPGRADE_IMPACT_LLM_CACHE` | `on` (`off` or `--no-cache` to bypass) |
-| cache dir | `UPGRADE_IMPACT_CACHE_DIR` | `~/.cache/upgrade-impact` (downloaded PR code, model replies) |
+| cache dir | `UPGRADE_IMPACT_CACHE_DIR` | `~/.cache/upgrade-impact` (downloaded PR code, model replies, eval clones and notes) |
+| git host for `mine`/`eval` | `UPGRADE_IMPACT_GIT_URL` | `https://github.com` |
 
 The same keys (lower-case, without the prefix) work in `.upgrade-impact.toml`.
 Provider credentials: `OLLAMA_HOST`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
@@ -176,7 +227,7 @@ GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
   would catch undocumented changes but costs far more and misses behaviour
   changes; notes are what maintainers write for exactly this purpose.
 
-## Limitations (day 2)
+## Limitations (day 3)
 
 - Instance types are inferred within one file and without flow analysis: an
   instance created in one module and used in another is not resolved, and a
@@ -185,7 +236,9 @@ GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
 - Candidate ranking for claims that name no symbol is lexical; embeddings are
   an extension point, not built yet.
 - Version ranges in titles such as `>=0.27,<0.29` resolve to the lower bound.
-- No evaluation numbers yet: the labelled dataset and baselines arrive on day 3.
+- No real-model eval numbers yet (see [Evaluation](#evaluation)). The dataset's
+  labels are what maintainers changed, which includes some unrelated cleanup
+  and misses fixes that landed in later PRs (ADR 0003).
 
 ## Development
 

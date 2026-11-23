@@ -41,6 +41,13 @@ notes, and a naive single prompt. Metrics are file and line precision/recall
 and the false-alarm rate, with bootstrap CIs. Adds `upgrade-impact eval` and a
 CI gate.
 
+*Adjusted on day 3 (see PROGRESS):* the miner reads git history (partial
+clones) instead of the GitHub API, so it needs no token and has no rate limit;
+"green CI" is therefore not checked, and a clean bump is excluded instead when
+a later human commit names the package or reverts it (ADR 0003). Real-model
+eval runs are a manual `real-model` workflow input from day 3 on, so day 4's
+changes can be measured on the dev split with a real model.
+
 ## Day 4: quality and safety
 Treat release notes as untrusted input: fence them, check for injection, and
 validate output. Chunk long changelogs and slice them by version range. Follow

@@ -43,6 +43,22 @@ All notable changes to this project are documented here. The format follows
   such usage says how it was resolved.
 - On-disk cache of model replies keyed by the full request (`--no-cache`,
   `UPGRADE_IMPACT_LLM_CACHE=off`).
+- `upgrade-impact mine`: builds a labelled dataset from the git history of
+  public repositories (partial clones, no API token). A merged bump PR where a
+  human pushed code is an impact case labelled with the changed lines; one
+  that merged with manifest changes only is a no-impact case. Majors and 0.x
+  minors of packages the code imports; generated-looking fixes dropped; split
+  by repository (ADR 0003).
+- `data/cases.jsonl`: 259 real bumps from 51 repositories (61 impact, 198
+  no-impact), dev and held-out test splits, with the list of 154 repositories
+  scanned.
+- `upgrade-impact eval`: runs upgrade-impact, import-grep, symbol-grep and a
+  naive single prompt on the same cached notes and code; reports file and line
+  precision/recall, detection and false-alarm rates (strict and lenient) with
+  repository-level bootstrap intervals, token and call counts, and per-case
+  predictions; `--gate` fails on thresholds; `--per-label` takes a fixed sample.
+- CI runs the eval on the dev split with the fake provider behind a gate; the
+  real-model workflow can run it on a dev sample with Ollama.
 
 ### Changed
 
