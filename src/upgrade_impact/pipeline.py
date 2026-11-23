@@ -17,7 +17,7 @@ from upgrade_impact.extract import extract_claims, uncovered_lines
 from upgrade_impact.index.javascript import JS_SUFFIXES, index_js_repository
 from upgrade_impact.index.python import import_names_for, index_repository
 from upgrade_impact.match import match_claims
-from upgrade_impact.models import Bump, BumpReport, Ecosystem, Report
+from upgrade_impact.models import Bump, BumpReport, Ecosystem, ReleaseNotes, Report
 from upgrade_impact.notes import collect_notes
 from upgrade_impact.providers.base import ChatModel
 from upgrade_impact.sources.github import (
@@ -142,6 +142,22 @@ def resolve_code_root(
     return dest, [f"analysed {target.pr.slug} at {ref[:12]} (downloaded source files)"]
 
 
+def fetch_notes(
+    bump: Bump,
+    registry: RegistryClient,
+    github: GitHubClient,
+    *,
+    pr_body: str | None = None,
+) -> ReleaseNotes:
+    try:
+        info = registry.package(bump.ecosystem, bump.package)
+    except RegistryError as exc:
+        notes = collect_notes(bump, None, github, pr_body=pr_body)
+        notes.warnings.insert(0, f"registry lookup failed: {exc}")
+        return notes
+    return collect_notes(bump, info, github, pr_body=pr_body)
+
+
 def check_bump(
     bump: Bump,
     *,
@@ -153,14 +169,13 @@ def check_bump(
     settings: Settings,
     import_names: list[str] | None = None,
     review: bool = True,
+    notes: ReleaseNotes | None = None,
 ) -> BumpReport:
+    """Check one bump. ``notes`` skips the release-note lookup (the eval passes
+    a cached copy so every system reads the same notes)."""
     report = BumpReport(bump=bump)
-    try:
-        info = registry.package(bump.ecosystem, bump.package)
-    except RegistryError as exc:
-        report.warnings.append(f"registry lookup failed: {exc}")
-        info = None
-    notes = collect_notes(bump, info, github, pr_body=target.pr_body)
+    if notes is None:
+        notes = fetch_notes(bump, registry, github, pr_body=target.pr_body)
     report.warnings.extend(notes.warnings)
     report.notes_versions = notes.versions
     report.notes_sources = sorted({s.source for s in notes.sections})
