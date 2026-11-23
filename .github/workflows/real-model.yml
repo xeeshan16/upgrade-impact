@@ -10,6 +10,16 @@ on:
       models:
         description: Ollama models (JSON list)
         default: '["qwen2.5:3b", "qwen2.5:7b"]'
+      eval_per_label:
+        description: Also run the eval on N impact + N no-impact dev cases (0 = skip)
+        default: "0"
+      eval_model:
+        description: Ollama model for the eval
+        default: qwen2.5:7b
+      demo:
+        description: Run the demo PRs
+        type: boolean
+        default: true
   workflow_run:
     workflows: [ci]
     types: [completed]
@@ -24,7 +34,9 @@ concurrency:
 
 jobs:
   ollama:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: >
+      (github.event_name == 'workflow_dispatch' && inputs.demo) ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -62,4 +74,48 @@ jobs:
         if: always()
         with:
           name: real-model-${{ strategy.job-index }}
+          path: reports/
+
+  eval:
+    # Real-model eval on a fixed dev sample. Slow on a CPU runner, so manual only.
+    if: github.event_name == 'workflow_dispatch' && inputs.eval_per_label != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPGRADE_IMPACT_PROVIDER: ollama
+      UPGRADE_IMPACT_TIMEOUT_S: "1200"
+      UPGRADE_IMPACT_MAX_RETRIES: "1"
+      # Fewer review calls per bump keeps one case under ~15 minutes on CPU.
+      UPGRADE_IMPACT_MAX_REVIEW_CALLS: "3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: restore clones, notes and model replies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/upgrade-impact
+          key: real-eval-${{ inputs.eval_model }}-${{ github.run_id }}
+          restore-keys: real-eval-${{ inputs.eval_model }}-
+      - name: install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          if ! curl -sf http://localhost:11434/api/tags > /dev/null; then
+            nohup ollama serve > /tmp/ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 60); do curl -sf http://localhost:11434/api/tags > /dev/null && break; sleep 1; done
+      - run: ollama pull "${{ inputs.eval_model }}"
+      - name: eval on the dev sample
+        run: |
+          uv run upgrade-impact eval data/cases.jsonl --split dev \
+            --per-label "${{ inputs.eval_per_label }}" --model "${{ inputs.eval_model }}" \
+            --out reports/eval-real
+          cat reports/eval-real/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-real
           path: reports/
