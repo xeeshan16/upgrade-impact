@@ -71,8 +71,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/upgrade-impact
-          key: eval-${{ hashFiles('data/cases.jsonl') }}-${{ github.run_id }}
-          restore-keys: eval-${{ hashFiles('data/cases.jsonl') }}-
+          # One cache per dataset version: the release notes fetched on the first run
+          # are reused, so later runs score the same notes.
+          key: eval-${{ hashFiles('data/cases.jsonl') }}
       - name: deterministic systems and the fake provider on the dev split
         env:
           # Release notes come from the GitHub Releases API (and CHANGELOG files).
