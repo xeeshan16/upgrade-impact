@@ -14,10 +14,16 @@ gives ``symbol`` matches: many APIs share parameter names.
 A claim about a parameter is *not* matched by calls that visibly don't pass it:
 ``httpx.AsyncClient(timeout=10)`` is not affected by "the proxies argument was
 removed". That is what lets the tool say "no impact" with a reason.
+
+A changed *default* is the mirror image: the calls that rely on it are the ones
+that do not pass the parameter. dotenv 17 flipped ``quiet`` to false, so
+``dotenv.config({ path })`` starts logging and ``config({ quiet: true })`` is
+unaffected.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from upgrade_impact.models import (
@@ -33,6 +39,50 @@ from upgrade_impact.models import (
 
 _DIRECT_KINDS = frozenset({ClaimKind.REMOVED, ClaimKind.RENAMED})
 _RUNTIME_KINDS = frozenset({ClaimKind.DROPPED_SUPPORT})
+_DEFAULT_WORD = re.compile(r"\bdefault(?:s|ed)?\b", re.I)
+
+
+def _is_default_change(claim: Claim) -> bool:
+    if claim.kind == ClaimKind.DEFAULT_CHANGED:
+        return True
+    return claim.kind == ClaimKind.BEHAVIOR_CHANGED and bool(_DEFAULT_WORD.search(claim.summary))
+
+
+def _match_default(
+    claim: Claim, usage: Usage, params: set[str], symbol_hit: str | None
+) -> Match | None:
+    """Calls that do not pass the parameter get the new default."""
+    if usage.kind == UsageKind.IMPORT:
+        return None
+    names = ", ".join(sorted(params))
+    if usage.kind != UsageKind.CALL:
+        if symbol_hit is None:
+            return None
+        return Match(
+            usage=usage,
+            strength=MatchStrength.SYMBOL,
+            reason=f"references {usage.symbol} without a visible call",
+        )
+    if params.intersection(usage.keywords):
+        return None  # sets the parameter explicitly, so the default does not apply
+    if "**" in usage.keywords:
+        return Match(
+            usage=usage,
+            strength=MatchStrength.SYMBOL,
+            reason=f"forwards **kwargs, which may or may not set {names}",
+        )
+    if symbol_hit is None:
+        return Match(
+            usage=usage,
+            strength=MatchStrength.SYMBOL,
+            reason=f"calls {usage.symbol} without {names}, so it would get the new default; "
+            "the notes do not say which API",
+        )
+    return Match(
+        usage=usage,
+        strength=MatchStrength.DIRECT,
+        reason=f"calls {usage.symbol} without {names}, so it gets the new default",
+    )
 
 
 def _components(symbol: str, import_names: Iterable[str]) -> list[str]:
@@ -79,6 +129,8 @@ def _match_usage(claim: Claim, usage: Usage, import_names: list[str]) -> Match |
     )
     if claim.symbols and symbol_hit is None:
         return None
+    if params and _is_default_change(claim):
+        return _match_default(claim, usage, params, symbol_hit)
     if params:
         if usage.kind == UsageKind.IMPORT:
             return None

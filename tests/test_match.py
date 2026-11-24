@@ -6,7 +6,15 @@ import pytest
 
 from upgrade_impact.index.python import index_repository
 from upgrade_impact.match import match_claims, symbol_matches
-from upgrade_impact.models import Claim, ClaimKind, ClaimStatus, Evidence, MatchStrength
+from upgrade_impact.models import (
+    Claim,
+    ClaimKind,
+    ClaimStatus,
+    Evidence,
+    MatchStrength,
+    Usage,
+    UsageKind,
+)
 
 
 def claim(
@@ -150,3 +158,47 @@ def test_method_claim_matches_instance_calls_and_says_how() -> None:
     [result] = match_claims([claim], [usage], ["httpx"])
     assert result.status == ClaimStatus.AFFECTED
     assert result.matches[0].reason == "uses Client.stream; c = httpx.Client at line 2"
+
+
+def _js_call(symbol: str, keywords: list[str], line: int = 1) -> Usage:
+    return Usage(
+        path="libs/env/index.js",
+        line=line,
+        column=1,
+        symbol=symbol,
+        kind=UsageKind.CALL,
+        keywords=keywords,
+        snippet=f"{symbol}(...)",
+    )
+
+
+def test_a_changed_default_matches_calls_that_rely_on_it() -> None:
+    # dotenv 17.0.0: "Default `quiet` to false" (mdn/yari added quiet: true).
+    usages = [
+        _js_call("dotenv.config", ["path"], 1),
+        _js_call("dotenv.config", ["path", "quiet"], 2),
+        _js_call("dotenv.config", ["**"], 3),
+        _js_call("dotenv.parse", [], 4),
+    ]
+    named = claim(ClaimKind.DEFAULT_CHANGED, ["config"], ["quiet"])
+    [result] = match_claims([named], usages, ["dotenv"])
+    assert result.status == ClaimStatus.AFFECTED
+    by_line = {m.usage.line: m.strength for m in result.matches}
+    assert by_line == {1: MatchStrength.DIRECT, 3: MatchStrength.SYMBOL}
+
+    unnamed = claim(ClaimKind.DEFAULT_CHANGED, [], ["quiet"])
+    [result] = match_claims([unnamed], usages, ["dotenv"])
+    assert result.status == ClaimStatus.POSSIBLE
+    assert sorted(m.usage.line for m in result.matches) == [1, 3, 4]
+    assert "the notes do not say which API" in result.matches[0].reason
+
+
+def test_a_behaviour_claim_about_a_default_counts_as_one() -> None:
+    usages = [_js_call("dotenv.config", ["path"], 1), _js_call("dotenv.config", ["quiet"], 2)]
+    worded = claim(ClaimKind.BEHAVIOR_CHANGED, ["config"], ["quiet"])
+    worded.summary = "quiet now defaults to false"
+    [result] = match_claims([worded], usages, ["dotenv"])
+    assert [m.usage.line for m in result.matches] == [1]
+    plain = claim(ClaimKind.BEHAVIOR_CHANGED, ["config"], ["quiet"])
+    [result] = match_claims([plain], usages, ["dotenv"])
+    assert [m.usage.line for m in result.matches] == [2]  # passes quiet: the old rule
