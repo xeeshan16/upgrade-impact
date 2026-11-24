@@ -67,6 +67,7 @@ class Prediction:
     # upgrade-impact only: what kept the verdict at "review", and lines it ruled out.
     causes: dict[str, int] = field(default_factory=dict)
     dismissed: dict[str, int] = field(default_factory=dict)
+    suspicious: list[str] = field(default_factory=list)
     runs: list[ModelRun] = field(default_factory=list)
     seconds: float = 0.0
     error: str | None = None
@@ -372,6 +373,7 @@ class UpgradeImpact:
             verdict=report.verdict,
             causes=report.review_causes if report.verdict == "review" else {},
             dismissed=dismissed,
+            suspicious=[f"N{line.n}: {line.text.strip()[:160]}" for line in report.suspicious],
             runs=runs,
             seconds=time.perf_counter() - started,
         )

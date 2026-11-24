@@ -18,6 +18,7 @@ def _pct(value: float | None, ci: list[float] | tuple[float, float] | None = Non
 
 # Per-case rows are listed when the run is this small (a real-model sample).
 MAX_CASE_ROWS = 40
+MAX_FLAGGED = 20
 _CAUSES = {
     "possible": "possible matches",
     "no_api": "claims naming no API",
@@ -74,6 +75,10 @@ def _verdict_lines(summary: dict[str, Any]) -> list[str]:
         if entry.get("dismissed_lines"):
             ruled = ", ".join(f"{k}: {v}" for k, v in entry["dismissed_lines"].items())
             out.append(f"- note lines ruled out ({name}): {ruled}")
+        if flagged := entry.get("suspicious_lines"):
+            out += ["", f"Note lines {name} flagged as injection-like (check for false positives):"]
+            out.append("")
+            out += [f"- {item['case']} {item['line']}" for item in flagged[:MAX_FLAGGED]]
     return out
 
 

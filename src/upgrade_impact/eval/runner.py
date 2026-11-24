@@ -117,6 +117,14 @@ class EvalResult:
                 entry["review_causes"] = {k: dict(v) for k, v in causes.items()}
             if dismissed:
                 entry["dismissed_lines"] = dict(dismissed)
+            flagged = [
+                {"case": r.case.id, "line": text}
+                for r in scored
+                if (p := r.predictions.get(system)) is not None
+                for text in p.suspicious
+            ]
+            if flagged:
+                entry["suspicious_lines"] = flagged
             for mode in MODES:
                 scores = self.scores(system, mode)
                 entry[mode] = {
@@ -146,6 +154,7 @@ class EvalResult:
                     "verdict": p.verdict,
                     "review_causes": p.causes,
                     "dismissed": p.dismissed,
+                    "suspicious": p.suspicious,
                     "error": p.error,
                     "seconds": round(p.seconds, 3),
                 }
