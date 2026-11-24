@@ -3,7 +3,8 @@
 ``FakeChat`` answers extraction prompts with a keyword heuristic: note lines
 that say "removed", "renamed", "no longer", "breaking" and so on become claims,
 with backticked identifiers as symbols. It answers adjudication prompts with a
-name rule (see :func:`fake_decisions`). Every summary and reason starts with
+name rule (see :func:`fake_decisions`), and second readings with a backtick
+rule (see :func:`fake_recheck`). Every summary and reason starts with
 ``[fake provider]`` so its output can never be mistaken for a model's.
 """
 
@@ -37,6 +38,7 @@ _KINDS = (
     (re.compile(r"\bdeprecat", re.I), "deprecated"),
 )
 _BACKTICKED = re.compile(r"`([^`]+)`")
+_HEADING = re.compile(r"^\s*#{1,6}\s")
 _IDENT = re.compile(r"^[A-Za-z_][\w.]*(\(\))?$")
 _PARAM = re.compile(r"`?(\w+)=?`?\s+(argument|parameter|option|kwarg|keyword)", re.I)
 
@@ -50,6 +52,8 @@ def _usage(messages: Sequence[Message], text: str) -> TokenUsage:
 def fake_claims(prompt: str) -> list[dict[str, Any]]:
     claims: list[dict[str, Any]] = []
     for number, text in NOTE_LINE.findall(prompt):
+        if _HEADING.match(text):
+            continue
         kind = next((k for pattern, k in _KINDS if pattern.search(text)), None)
         if kind is None:
             continue
@@ -121,6 +125,34 @@ def fake_decisions(prompt: str) -> list[dict[str, Any]]:
     return decisions
 
 
+RECHECK_MARKER = "SECOND READING"  # mirrors upgrade_impact.recheck
+
+
+def fake_recheck(prompt: str) -> list[dict[str, Any]]:
+    """Second reading by rule: a listed line that backticks an identifier changes the
+    API; one that names nothing in backticks does not."""
+    answers: list[dict[str, Any]] = []
+    for number, text in NOTE_LINE.findall(prompt):
+        ticked = [t.strip().removesuffix("()") for t in _BACKTICKED.findall(text)]
+        symbols = [t for t in ticked if _IDENT.match(t)]
+        quote = text.strip().lstrip("-*• ").strip()[:60]
+        breaks = bool(symbols)
+        answers.append(
+            {
+                "line": int(number),
+                "quote": quote,
+                "breaks_users": breaks,
+                "reason": "[fake provider] "
+                + ("it names an identifier" if breaks else "it names no identifier"),
+                "kind": "other",
+                "summary": f"[fake provider] {quote}" if breaks else "",
+                "symbols": symbols,
+                "parameters": [],
+            }
+        )
+    return answers
+
+
 class FakeChat:
     """Keyword-heuristic stand-in for a model. Deterministic for a given prompt."""
 
@@ -145,6 +177,9 @@ class FakeChat:
         json_schema: Mapping[str, Any] | None = None,
     ) -> Completion:
         prompt = messages[-1].content if messages else ""
+        if RECHECK_MARKER in prompt:
+            text = json.dumps({"lines": fake_recheck(prompt)})
+            return Completion(text, self._model, _usage(messages, text), 0.0, "stop")
         if ADJUDICATE_MARKER in prompt:
             text = json.dumps({"decisions": fake_decisions(prompt)})
             return Completion(text, self._model, _usage(messages, text), 0.0, "stop")

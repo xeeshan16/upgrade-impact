@@ -217,6 +217,20 @@ class ClaimStatus(StrEnum):
     NEEDS_REVIEW = "needs_review"
 
 
+class RuntimeCheck(BaseModel):
+    """A runtime-support change compared with the runtime the project declares."""
+
+    runtime: str = Field(description="node or python")
+    required: str = Field(description="What the new version needs, e.g. 'node > 18'.")
+    declared: str | None = Field(default=None, description="The project's specifier.")
+    path: str | None = Field(default=None, description="Manifest the specifier came from.")
+    line: int | None = None
+    satisfied: bool | None = Field(
+        default=None, description="None when the project declares no runtime version."
+    )
+    reason: str
+
+
 class ClaimResult(BaseModel):
     claim: Claim
     status: ClaimStatus
@@ -225,6 +239,7 @@ class ClaimResult(BaseModel):
         default_factory=list,
         description="Candidates the model judged not affected, with verified citations.",
     )
+    runtime: RuntimeCheck | None = None
 
 
 class TokenUsage(BaseModel):
@@ -259,6 +274,14 @@ class IndexStats(BaseModel):
     import_names: list[str] = Field(default_factory=list)
 
 
+class DismissedLine(BaseModel):
+    """A note line that read like a breaking change and was ruled out, with why."""
+
+    line: NoteLine
+    by: str = Field(description="model (second reading) or runtime (declared floor)")
+    reason: str
+
+
 class BumpReport(BaseModel):
     """The answer for one bump."""
 
@@ -277,10 +300,23 @@ class BumpReport(BaseModel):
         default_factory=list,
         description="Note lines that read like a breaking change but no verified claim cites.",
     )
+    dismissed: list[DismissedLine] = Field(
+        default_factory=list,
+        description="Breaking-looking note lines ruled out on a second reading: the model "
+        "said they do not change the package's API (with a verified quote, and naming "
+        "nothing this code uses), or the project's declared runtime already meets them.",
+    )
+    suspicious: list[NoteLine] = Field(
+        default_factory=list,
+        description="Note lines that read like instructions to a model (prompt injection).",
+    )
     index: IndexStats = Field(default_factory=IndexStats)
     model: ModelRun | None = None
     adjudication: ModelRun | None = Field(
         default=None, description="Model calls that read candidate code lines."
+    )
+    recheck: ModelRun | None = Field(
+        default=None, description="Model calls that re-read unclaimed note lines."
     )
     warnings: list[str] = Field(default_factory=list)
 
@@ -291,15 +327,44 @@ class BumpReport(BaseModel):
     def verdict(self) -> str:
         if self.count(ClaimStatus.AFFECTED):
             return "affected"
-        if (
-            self.count(ClaimStatus.POSSIBLE)
-            or self.count(ClaimStatus.NEEDS_REVIEW)
-            or self.uncovered
-        ):
+        if self.review_reasons:
             return "review"
         if not self.notes_lines:
             return "unknown"
         return "no-impact"
+
+    @property
+    def review_causes(self) -> dict[str, int]:
+        """What keeps the answer at "review" rather than "no impact", counted by cause:
+        ``possible`` (claims with unconfirmed matches), ``no_api`` (claims naming no API,
+        of which ``runtime`` are about the runtime), ``unclaimed`` (breaking-looking note
+        lines no claim covers) and ``suspicious`` (note lines that read like injection)."""
+        needs = [r for r in self.results if r.status == ClaimStatus.NEEDS_REVIEW]
+        causes = {
+            "possible": self.count(ClaimStatus.POSSIBLE),
+            "no_api": len(needs),
+            "runtime": sum(1 for r in needs if r.runtime is not None),
+            "unclaimed": len(self.uncovered),
+            "suspicious": len(self.suspicious) if self.notes_lines else 0,
+        }
+        return {k: v for k, v in causes.items() if v}
+
+    @property
+    def review_reasons(self) -> list[str]:
+        """Why the answer is "review" rather than "no impact" (empty otherwise)."""
+        causes = self.review_causes
+        reasons: list[str] = []
+        if n := causes.get("possible"):
+            reasons.append(f"{n} claim(s) with possible matches")
+        if n := causes.get("no_api"):
+            runtime = causes.get("runtime")
+            detail = f", {runtime} about the runtime" if runtime else ""
+            reasons.append(f"{n} claim(s) naming no API{detail}")
+        if n := causes.get("unclaimed"):
+            reasons.append(f"{n} unclaimed breaking-looking note line(s)")
+        if n := causes.get("suspicious"):
+            reasons.append(f"{n} note line(s) read like instructions to a model")
+        return reasons
 
 
 class Report(BaseModel):

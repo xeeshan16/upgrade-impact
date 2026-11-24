@@ -13,13 +13,30 @@ from pathlib import Path
 from upgrade_impact.adjudicate import SourceFiles, adjudicate
 from upgrade_impact.bump import FileDiff, patch_lines, resolve_bumps, split_unified_diff
 from upgrade_impact.config import Settings
-from upgrade_impact.extract import extract_claims, uncovered_lines
+from upgrade_impact.extract import extract_claims, uncovered_lines, verify_claims
+from upgrade_impact.guard import suspicious_lines
 from upgrade_impact.index.javascript import JS_SUFFIXES, index_js_repository
 from upgrade_impact.index.python import import_names_for, index_repository
 from upgrade_impact.match import match_claims
-from upgrade_impact.models import Bump, BumpReport, Ecosystem, ReleaseNotes, Report
+from upgrade_impact.models import (
+    Bump,
+    BumpReport,
+    Claim,
+    Ecosystem,
+    ReleaseNotes,
+    Report,
+    Usage,
+)
 from upgrade_impact.notes import collect_notes
 from upgrade_impact.providers.base import ChatModel
+from upgrade_impact.recheck import code_names, recheck_lines
+from upgrade_impact.runtime import (
+    MANIFEST_FILES,
+    Floor,
+    apply_runtime,
+    project_floor,
+    runtime_dismissals,
+)
 from upgrade_impact.sources.github import (
     GitHubClient,
     GitHubError,
@@ -31,6 +48,9 @@ from upgrade_impact.sources.registry import RegistryClient, RegistryError
 log = logging.getLogger(__name__)
 
 SOURCE_SUFFIXES = (".py", ".pyi", *JS_SUFFIXES)
+# What a PR's code download keeps: the source files plus the manifests that
+# declare the runtime floor (matched as name suffixes).
+DOWNLOAD_SUFFIXES = (*SOURCE_SUFFIXES, *MANIFEST_FILES)
 
 
 class CheckError(RuntimeError):
@@ -128,13 +148,14 @@ def resolve_code_root(
     ):
         return cwd, [f"using the local checkout in {cwd} for {target.pr.slug}"]
     ref = target.head_sha or f"refs/pull/{target.pr.number}/head"
-    key = hashlib.sha256(f"{target.pr.slug}@{ref}".encode()).hexdigest()[:16]
+    # "v2": downloads made before manifests were kept lack them.
+    key = hashlib.sha256(f"v2|{target.pr.slug}@{ref}".encode()).hexdigest()[:16]
     dest = default_cache_dir(settings, env) / "repos" / f"{target.pr.owner}-{target.pr.repo}-{key}"
     marker = dest / ".complete"
     if not marker.exists():
         try:
             count = github.download_source(
-                target.pr.owner, target.pr.repo, ref, dest, SOURCE_SUFFIXES
+                target.pr.owner, target.pr.repo, ref, dest, DOWNLOAD_SUFFIXES
             )
         except GitHubError as exc:
             raise CheckError(f"could not download the PR's code: {exc}") from exc
@@ -192,11 +213,20 @@ def check_bump(
         usages = js_index.usages
         report.index = js_index.stats
 
+    floor = project_floor(code_root, bump.ecosystem)
+    report.suspicious = [
+        line for n in suspicious_lines(notes) if (line := notes.line(n)) is not None
+    ]
+    if report.suspicious:
+        report.warnings.append(
+            f"{len(report.suspicious)} release-note line(s) read like instructions to a model "
+            "(possible prompt injection): "
+            + ", ".join(f"N{line.n}" for line in report.suspicious[:5])
+        )
+
     if chat is None or not notes.lines:
         # Without a model, the lines that read like breaking changes are the summary.
-        report.uncovered = [
-            line for n in uncovered_lines(notes, []) if (line := notes.line(n)) is not None
-        ]
+        _settle_uncovered(report, notes, uncovered_lines(notes, []), floor, bump)
         return report
     extraction = extract_claims(
         chat,
@@ -211,7 +241,23 @@ def check_bump(
     report.claims_dropped = extraction.dropped
     report.dropped_claims = extraction.dropped_claims
     report.warnings.extend(extraction.warnings)
-    report.results = match_claims(extraction.claims, usages, names)
+    claims = extraction.claims
+
+    if settings.recheck == "on":
+        claims = _second_reading(
+            report,
+            chat,
+            bump=bump,
+            notes=notes,
+            claims=claims,
+            floor=floor,
+            usages=usages,
+            names=names,
+            settings=settings,
+        )
+
+    report.results = match_claims(claims, usages, names)
+    apply_runtime(report.results, notes, floor, bump.ecosystem)
     if review and settings.max_candidates > 0:
         outcome = adjudicate(
             chat,
@@ -227,12 +273,78 @@ def check_bump(
         if outcome.run.calls:
             report.adjudication = outcome.run
         report.warnings.extend(outcome.warnings)
-    report.uncovered = [
-        line
-        for n in uncovered_lines(notes, extraction.claims)
-        if (line := notes.line(n)) is not None
-    ]
+    dismissed = {d.line.n for d in report.dismissed}
+    _settle_uncovered(
+        report,
+        notes,
+        [n for n in uncovered_lines(notes, claims) if n not in dismissed],
+        floor,
+        bump,
+    )
     return report
+
+
+def _second_reading(
+    report: BumpReport,
+    chat: ChatModel,
+    *,
+    bump: Bump,
+    notes: ReleaseNotes,
+    claims: list[Claim],
+    floor: Floor | None,
+    usages: list[Usage],
+    names: list[str],
+    settings: Settings,
+) -> list[Claim]:
+    """Re-read the unclaimed breaking-looking lines (those the declared runtime
+    does not already settle). New claims are verified and appended; lines the
+    model rules out (within the guards of :mod:`.recheck`) are dismissed."""
+    unclaimed = uncovered_lines(notes, claims)
+    settled = {d.line.n for d in runtime_dismissals(notes, unclaimed, floor, bump.ecosystem)}
+    second = [n for n in unclaimed if n not in settled]
+    if not second:
+        return claims
+    recheck = recheck_lines(
+        chat,
+        bump,
+        notes,
+        second,
+        used_names=code_names(usages, names),
+        package_names=names,
+        protected=[line.n for line in report.suspicious],
+        max_output_tokens=settings.max_output_tokens,
+    )
+    report.recheck = recheck.run
+    report.warnings.extend(recheck.warnings)
+    report.dismissed.extend(recheck.dismissed)
+    if not recheck.claims:
+        return claims
+    added, dropped = verify_claims(notes, recheck.claims)
+    report.claims_proposed += len(recheck.claims)
+    report.claims_dropped += len(dropped)
+    report.dropped_claims.extend(dropped)
+    return _renumber([*claims, *added])
+
+
+def _renumber(claims: list[Claim]) -> list[Claim]:
+    return [c.model_copy(update={"id": f"C{i}"}) for i, c in enumerate(claims, start=1)]
+
+
+def _settle_uncovered(
+    report: BumpReport,
+    notes: ReleaseNotes,
+    unclaimed: list[int],
+    floor: Floor | None,
+    bump: Bump,
+) -> None:
+    """Unclaimed breaking-looking lines: the ones the declared runtime already
+    meets are dismissed, the rest stay for a human."""
+    by_runtime = runtime_dismissals(notes, unclaimed, floor, bump.ecosystem)
+    report.dismissed.extend(by_runtime)
+    gone = {d.line.n for d in by_runtime}
+    report.uncovered = [
+        line for n in unclaimed if n not in gone and (line := notes.line(n)) is not None
+    ]
 
 
 def run_check(

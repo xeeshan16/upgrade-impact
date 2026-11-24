@@ -7,6 +7,7 @@ from upgrade_impact.extract import (
     CLAIMS_SCHEMA,
     build_prompt,
     extract_claims,
+    is_heading,
     locate_quote,
     parse_claims,
     parse_reply,
@@ -384,3 +385,25 @@ def test_evidence_less_claims_cite_the_flagged_line_that_names_them(fixtures: Pa
     assert result.dropped == 1  # the streaming claim names nothing a flagged line mentions
     app_claim = next(c for c in result.claims if c.evidence[0].line == app)
     assert app_claim.parameters == ["app"]  # the cited line calls it an argument
+
+
+def test_section_headings_are_not_unclaimed_changes() -> None:
+    # eventsource 4.0.0's CHANGELOG opens with a heading the keyword filter matches.
+    notes = ReleaseNotes.from_sections(
+        "eventsource",
+        [
+            NotesSection(
+                version="4.0.0",
+                source="changelog",
+                lines=[
+                    "### ⚠ BREAKING CHANGES",
+                    "- `FetchLikeInit` is now removed. Use",
+                    "**Breaking changes:**",
+                    "- breaking: Remove sinon.defaultConfig and related modules",
+                ],
+            )
+        ],
+    )
+    assert uncovered_lines(notes, []) == [2, 4]
+    assert is_heading("* ⚠️ Breaking Changes")
+    assert not is_heading("Removed `foo`")

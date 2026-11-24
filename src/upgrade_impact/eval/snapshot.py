@@ -10,6 +10,7 @@ from upgrade_impact.index.javascript import index_js_repository
 from upgrade_impact.index.python import import_names_for, index_repository
 from upgrade_impact.models import Bump, Ecosystem, IndexStats, Usage
 from upgrade_impact.pipeline import SOURCE_SUFFIXES
+from upgrade_impact.runtime import MANIFEST_FILES
 
 # Directories never worth exporting: vendored or generated code.
 _SKIP_PARTS = frozenset(
@@ -19,14 +20,17 @@ MAX_EXPORT_FILES = 20_000
 
 
 def is_source(path: str) -> bool:
+    if path in MANIFEST_FILES:
+        return True  # root manifests: the declared runtime floor
     if not path.endswith(SOURCE_SUFFIXES) or path.endswith((".min.js", ".d.ts")):
         return False
     return not any(part in _SKIP_PARTS for part in path.split("/")[:-1])
 
 
 def ensure_snapshot(git: Git, cache_dir: Path, repo: str, sha: str) -> Path:
-    """Export the source files of ``repo`` at ``sha`` (cached by commit)."""
-    dest = cache_dir / "snapshots" / repo.replace("/", "__") / sha
+    """Export the source files (and root manifests) of ``repo`` at ``sha``, cached by
+    commit. ``snapshots-v2`` added the manifests."""
+    dest = cache_dir / "snapshots-v2" / repo.replace("/", "__") / sha
     marker = dest / ".complete"
     if marker.exists():
         return dest

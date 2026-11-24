@@ -6,6 +6,7 @@ from upgrade_impact.models import (
     BumpReport,
     ClaimResult,
     ClaimStatus,
+    DismissedLine,
     Ecosystem,
     Match,
     MatchStrength,
@@ -79,6 +80,34 @@ def _review_line(report: BumpReport) -> str | None:
     return _run_line("code review", report.adjudication)
 
 
+def _recheck_line(report: BumpReport) -> str | None:
+    return _run_line("second reading", report.recheck)
+
+
+def _run_lines(report: BumpReport) -> list[str]:
+    runs = (_model_line(report), _recheck_line(report), _review_line(report))
+    return [line for line in runs if line]
+
+
+def _why(report: BumpReport) -> str | None:
+    if report.verdict != "review":
+        return None
+    return "why review: " + "; ".join(report.review_reasons)
+
+
+def _runtime(result: ClaimResult) -> str | None:
+    check = result.runtime
+    if check is None:
+        return None
+    where = f" ({check.path}:{check.line})" if check.path else ""
+    return f"runtime: {check.reason}{where}"
+
+
+def _dismissed_text(item: DismissedLine) -> str:
+    who = "declared runtime" if item.by == "runtime" else "second reading"
+    return f"N{item.line.n} ({item.line.version}): {item.line.text.strip()}  [{who}: {item.reason}]"
+
+
 def _decision(match: Match) -> str | None:
     decision = match.adjudication
     if decision is None:
@@ -112,6 +141,8 @@ def _text_result(result: ClaimResult) -> list[str]:
     if claim.symbols or claim.parameters:
         names = ", ".join([*claim.symbols, *(f"{p}=" for p in claim.parameters)])
         out.append(f"  symbols: {names}")
+    if runtime := _runtime(result):
+        out.append(f"  {runtime}")
     if _imports_only(result):
         out.append(f"  {_imports_summary(result)}")
         return out
@@ -149,6 +180,20 @@ def _text_uncovered(report: BumpReport) -> list[str]:
     return out
 
 
+def _text_dismissed(report: BumpReport) -> list[str]:
+    if not report.dismissed:
+        return []
+    out = [
+        "",
+        f"[ruled out] {len(report.dismissed)} breaking-looking note line(s) do not reach "
+        "code that uses the package:",
+    ]
+    out.extend(f"  {_dismissed_text(d)}" for d in report.dismissed[:MAX_MATCHES_SHOWN])
+    if len(report.dismissed) > MAX_MATCHES_SHOWN:
+        out.append(f"  ... and {len(report.dismissed) - MAX_MATCHES_SHOWN} more")
+    return out
+
+
 def _text_header(report: BumpReport) -> list[str]:
     bump = report.bump
     notes = (
@@ -167,6 +212,8 @@ def _text_header(report: BumpReport) -> list[str]:
         _VERDICT_TEXT[report.verdict],
         _headline(report),
     ]
+    if why := _why(report):
+        out.insert(-1, why)
     if report.claims_dropped:
         out.append(
             f"({report.claims_dropped} claim(s) dropped: their quotes were not found in the notes)"
@@ -181,7 +228,8 @@ def render_text(report: Report) -> str:
         for result in bump_report.results:
             out.extend(_text_result(result))
         out.extend(_text_uncovered(bump_report))
-        lines = [line for line in (_model_line(bump_report), _review_line(bump_report)) if line]
+        out.extend(_text_dismissed(bump_report))
+        lines = _run_lines(bump_report)
         if lines:
             out.extend(["", *lines])
         out.extend(f"warning: {warning}" for warning in bump_report.warnings)
@@ -198,6 +246,9 @@ def render_markdown(report: Report) -> str:
         out.append("")
         out.append(f"**{_VERDICT_TEXT[bump_report.verdict]}**. {_headline(bump_report)}.")
         out.append("")
+        if why := _why(bump_report):
+            out.append(f"_{why[0].upper()}{why[1:]}._")
+            out.append("")
         if bump_report.notes_lines:
             out.append(
                 f"Release notes: {', '.join(bump_report.notes_versions)} "
@@ -230,6 +281,8 @@ def render_markdown(report: Report) -> str:
                     )
                     or "—"
                 )
+                if runtime := _runtime(result):
+                    code = f"{runtime}<br>{code}" if code != "—" else runtime
                 summary = claim.summary.replace("|", "\\|")
                 out.append(
                     f"| {result.status.value} | {claim.kind.value}: {summary} | "
@@ -245,10 +298,20 @@ def render_markdown(report: Report) -> str:
             for note in bump_report.uncovered[:MAX_MATCHES_SHOWN]:
                 out.append(f"- N{note.n} ({note.version}): {note.text.strip()}")
             out.append("")
-        for line in (_model_line(bump_report), _review_line(bump_report)):
-            if line:
-                out.append(f"<sub>{line}</sub>")
-                out.append("")
+        if bump_report.dismissed:
+            out.append(
+                "<details><summary>Breaking-looking note lines ruled out "
+                f"({len(bump_report.dismissed)})</summary>"
+            )
+            out.append("")
+            for item in bump_report.dismissed[:MAX_MATCHES_SHOWN]:
+                out.append(f"- {_dismissed_text(item)}")
+            out.append("")
+            out.append("</details>")
+            out.append("")
+        for line in _run_lines(bump_report):
+            out.append(f"<sub>{line}</sub>")
+            out.append("")
         for warning in bump_report.warnings:
             out.append(f"> {warning}")
         out.append("")

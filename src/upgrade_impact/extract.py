@@ -432,11 +432,26 @@ def attach_flagged_evidence(
     return out
 
 
+# Section headings ("### ⚠ BREAKING CHANGES", "**Breaking changes:**") announce
+# changes; they are not one. The lines under them are what gets claimed.
+_HEADING_LINE = re.compile(
+    r"^\s*(?:#{1,6}\s.*|[-*_•\s]*(?:[^\w\s]+\s*)?(?:breaking(?:\s+changes?)?|removals?|removed)"
+    r"[*_\s]*:?[*_\s]*)$",
+    re.I,
+)
+
+
+def is_heading(text: str) -> bool:
+    return _HEADING_LINE.match(text) is not None
+
+
 def uncovered_lines(notes: ReleaseNotes, claims: list[Claim]) -> list[int]:
-    """Note lines that look breaking but that no verified claim cites."""
+    """Note lines that look breaking but that no verified claim cites (headings excepted)."""
     cited = {ev.line for claim in claims for ev in claim.evidence if ev.verified}
     return [
-        line.n for line in notes.lines if line.n not in cited and BREAKING_HINT.search(line.text)
+        line.n
+        for line in notes.lines
+        if line.n not in cited and BREAKING_HINT.search(line.text) and not is_heading(line.text)
     ]
 
 

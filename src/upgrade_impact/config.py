@@ -4,7 +4,8 @@ Config file: ``.upgrade-impact.toml`` in the working directory, or the path in
 ``UPGRADE_IMPACT_CONFIG``. Keys mirror the environment variables without the
 ``UPGRADE_IMPACT_`` prefix, lower-cased (``provider``, ``model``, ``base_url``,
 ``timeout_s``, ``max_retries``, ``max_output_tokens``, ``repair_attempts``,
-``notes_budget_tokens``, ``max_candidates``, ``max_review_calls``, ``llm_cache``, ``cache_dir``).
+``notes_budget_tokens``, ``max_candidates``, ``max_review_calls``, ``recheck``, ``llm_cache``,
+``cache_dir``).
 """
 
 from __future__ import annotations
@@ -47,6 +48,9 @@ class Settings:
     max_candidates: int = 12
     # Most uncached review calls per bump (each reads up to six candidates).
     max_review_calls: int = 8
+    # "on" re-reads breaking-looking note lines no claim covers, one focused
+    # call per 20 lines (see upgrade_impact.recheck); "off" leaves them for a human.
+    recheck: str = "on"
     # "on" caches model replies on disk (temperature 0 makes them reproducible).
     llm_cache: str = "on"
     cache_dir: str | None = None
@@ -74,6 +78,8 @@ class Settings:
             raise ConfigError("max_candidates must be between 0 and 200")
         if not 0 <= self.max_review_calls <= 500:
             raise ConfigError("max_review_calls must be between 0 and 500")
+        if self.recheck not in ("on", "off"):
+            raise ConfigError("recheck must be 'on' or 'off'")
         if self.llm_cache not in ("on", "off"):
             raise ConfigError("llm_cache must be 'on' or 'off'")
         return self
@@ -90,6 +96,7 @@ _ENV_KEYS = {
     "notes_budget_tokens": "UPGRADE_IMPACT_NOTES_BUDGET_TOKENS",
     "max_candidates": "UPGRADE_IMPACT_MAX_CANDIDATES",
     "max_review_calls": "UPGRADE_IMPACT_MAX_REVIEW_CALLS",
+    "recheck": "UPGRADE_IMPACT_RECHECK",
     "llm_cache": "UPGRADE_IMPACT_LLM_CACHE",
     "cache_dir": "UPGRADE_IMPACT_CACHE_DIR",
     "github_api_url": "GITHUB_API_URL",
