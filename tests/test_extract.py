@@ -416,3 +416,30 @@ def test_changed_defaults_read_like_breaking_changes() -> None:
     assert BREAKING_HINT.search("`timeout` now defaults to 5 seconds")
     assert BREAKING_HINT.search("We changed the default encoding to utf-8")
     assert not BREAKING_HINT.search("- Add `populate` convenience method")
+
+
+def test_bare_names_in_a_default_change_are_parameters() -> None:
+    notes = ReleaseNotes.from_sections(
+        "dotenv",
+        [
+            NotesSection(
+                version="17.0.0",
+                source="changelog",
+                lines=["- Default `quiet` to false - informational runtime log message"],
+            )
+        ],
+    )
+    raw = Claim(
+        id="",
+        kind=ClaimKind.DEFAULT_CHANGED,
+        summary="Changed default `quiet` option from true to false",
+        symbols=["quiet", "Lock.extend"],
+        evidence=[Evidence(line=1, quote="Default `quiet` to false")],
+    )
+    [kept], _ = verify_claims(notes, [raw])
+    assert kept.parameters == ["quiet"]
+    assert kept.unverified_symbols == ["Lock.extend"]  # not in the notes
+    assert kept.symbols == []
+    removed = raw.model_copy(update={"kind": ClaimKind.REMOVED, "symbols": ["quiet"]})
+    [kept], _ = verify_claims(notes, [removed])
+    assert kept.symbols == ["quiet"]

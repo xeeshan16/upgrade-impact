@@ -236,6 +236,22 @@ def _is_parameter(symbol: str, cited_text: str) -> bool:
     return re.search(pattern, cited_text, re.I) is not None
 
 
+# A bare, lower-first name: `quiet`, `socket_timeout`, `followRedirects`.
+_BARE_OPTION = re.compile(r"[a-z_][A-Za-z0-9_]*")
+
+
+def _is_default_option(claim: Claim, symbol: str) -> bool:
+    """A changed default belongs to an option or parameter.
+
+    qwen2.5:7b put `quiet` from dotenv's "Default `quiet` to false" in
+    ``symbols``; as a symbol it matches no code, so the bump read as "no
+    impact" although every ``config()`` call without ``quiet`` changed. Bare
+    lower-first names in a default-change claim are treated as parameters;
+    qualified names (``Lock.extend``) and classes stay symbols.
+    """
+    return claim.kind == ClaimKind.DEFAULT_CHANGED and _BARE_OPTION.fullmatch(symbol) is not None
+
+
 def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim], list[Claim]]:
     """Check citations and symbols. Returns the verified claims and the dropped ones."""
     notes_text = "\n".join(line.text for line in notes.lines)
@@ -270,7 +286,7 @@ def verify_claims(notes: ReleaseNotes, claims: list[Claim]) -> tuple[list[Claim]
             line.text for ev in verified if (line := notes.line(ev.line)) is not None
         )
         for symbol in list(symbols):
-            if _is_parameter(symbol, cited_text):
+            if _is_parameter(symbol, cited_text) or _is_default_option(claim, symbol):
                 symbols.remove(symbol)
                 if symbol not in parameters:
                     parameters.append(symbol)
