@@ -104,6 +104,19 @@ class EvalResult:
                     verdicts[r.case.label.value][p.verdict] += 1
             if any(verdicts.values()):
                 entry["verdicts"] = {k: dict(v) for k, v in verdicts.items()}
+            causes: dict[str, Counter[str]] = {"impact": Counter(), "no_impact": Counter()}
+            dismissed: Counter[str] = Counter()
+            for r in scored:
+                p = r.predictions.get(system)
+                if p is None:
+                    continue
+                # Cases (not claims) per cause: how many "review" answers each cause held up.
+                causes[r.case.label.value].update(p.causes.keys())
+                dismissed.update(p.dismissed)
+            if any(causes.values()):
+                entry["review_causes"] = {k: dict(v) for k, v in causes.items()}
+            if dismissed:
+                entry["dismissed_lines"] = dict(dismissed)
             for mode in MODES:
                 scores = self.scores(system, mode)
                 entry[mode] = {
@@ -131,6 +144,8 @@ class EvalResult:
                     "affected": sorted(p.affected),
                     "possible": sorted(p.possible),
                     "verdict": p.verdict,
+                    "review_causes": p.causes,
+                    "dismissed": p.dismissed,
                     "error": p.error,
                     "seconds": round(p.seconds, 3),
                 }

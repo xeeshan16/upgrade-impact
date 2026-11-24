@@ -16,7 +16,68 @@ def _pct(value: float | None, ci: list[float] | tuple[float, float] | None = Non
     return text
 
 
-def render_summary(summary: dict[str, Any]) -> str:
+# Per-case rows are listed when the run is this small (a real-model sample).
+MAX_CASE_ROWS = 40
+_CAUSES = {
+    "possible": "possible matches",
+    "no_api": "claims naming no API",
+    "runtime": "of which runtime",
+    "unclaimed": "unclaimed note lines",
+    "suspicious": "injection-like note lines",
+}
+
+
+def _causes(counts: dict[str, int]) -> str:
+    return ", ".join(f"{_CAUSES.get(k, k)}: {v}" for k, v in counts.items()) or "—"
+
+
+def _case_table(rows: list[dict[str, Any]]) -> list[str]:
+    out = [
+        "",
+        "Per case (upgrade-impact):",
+        "",
+        "| Case | Label | Notes | Verdict | Affected / possible lines | Held at review by | "
+        "Ruled out |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in rows:
+        p = row["systems"].get("upgrade-impact")
+        if p is None:
+            continue
+        ruled = ", ".join(f"{k} {v}" for k, v in (p.get("dismissed") or {}).items()) or "—"
+        verdict = f"error: {p['error'][:60]}" if p["error"] else p.get("verdict") or "—"
+        out.append(
+            f"| [{row['id']}]({row['url']}) | {row['label']} | {row['notes_lines']} | "
+            f"{verdict} | {len(p['affected'])} / {len(p['possible'])} | "
+            f"{_causes(p.get('review_causes') or {})} | {ruled} |"
+        )
+    return out
+
+
+def _verdict_lines(summary: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    verdicts = {n: e["verdicts"] for n, e in summary["systems"].items() if "verdicts" in e}
+    if verdicts:
+        out += ["", "Bump verdicts (upgrade-impact's own answer per case):", ""]
+        for name, by_label in verdicts.items():
+            for label, counts in by_label.items():
+                if counts:
+                    parts = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+                    out.append(f"- {name}, {label} cases: {parts}")
+    for name, entry in summary["systems"].items():
+        by_label = entry.get("review_causes")
+        if by_label:
+            out += ["", f'What held {name} at "review" (cases per cause):', ""]
+            for label, counts in by_label.items():
+                if counts:
+                    out.append(f"- {label} cases: {_causes(counts)}")
+        if entry.get("dismissed_lines"):
+            ruled = ", ".join(f"{k}: {v}" for k, v in entry["dismissed_lines"].items())
+            out.append(f"- note lines ruled out ({name}): {ruled}")
+    return out
+
+
+def render_summary(summary: dict[str, Any], rows: list[dict[str, Any]] | None = None) -> str:
     out = [
         "# upgrade-impact eval",
         "",
@@ -56,14 +117,9 @@ def render_summary(summary: dict[str, Any]) -> str:
             f"{entry['input_tokens']}/{entry['output_tokens']} | {entry['seconds']} | "
             f"{entry['errors']} |"
         )
-    verdicts = {n: e["verdicts"] for n, e in summary["systems"].items() if "verdicts" in e}
-    if verdicts:
-        out += ["", "Bump verdicts (upgrade-impact's own answer per case):", ""]
-        for name, by_label in verdicts.items():
-            for label, counts in by_label.items():
-                if counts:
-                    parts = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
-                    out.append(f"- {name}, {label} cases: {parts}")
+    out += _verdict_lines(summary)
+    if rows and len(rows) <= MAX_CASE_ROWS:
+        out += _case_table(rows)
     if summary.get("case_errors"):
         out += ["", "Cases that could not be scored:", ""]
         out += [f"- {k}: {v}" for k, v in summary["case_errors"].items()]

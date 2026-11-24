@@ -355,6 +355,7 @@ def _eval(args: argparse.Namespace) -> int:
                 "max_candidates": settings.max_candidates,
                 "max_review_calls": settings.max_review_calls,
                 "max_output_tokens": settings.max_output_tokens,
+                "recheck": settings.recheck,
             },
         }
     )
@@ -364,7 +365,7 @@ def _eval(args: argparse.Namespace) -> int:
     with (args.out / "cases.jsonl").open("w", encoding="utf-8") as handle:
         for row in result.case_rows():
             handle.write(json.dumps(row) + "\n")
-    markdown = render_summary(summary)
+    markdown = render_summary(summary, result.case_rows())
     (args.out / "report.md").write_text(markdown, encoding="utf-8")
     sys.stdout.write(markdown)
     if gate is not None:

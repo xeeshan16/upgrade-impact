@@ -99,7 +99,13 @@ def test_mine_then_eval(env: Path, tmp_path: Path, capsys: pytest.CaptureFixture
     httpx_row = next(r for r in rows if r["id"].endswith(":httpx"))
     assert ["app/main.py", 3] in httpx_row["systems"]["symbol-grep"]["affected"]
     assert httpx_row["systems"]["upgrade-impact"]["verdict"] in {"affected", "review"}
-    assert (out / "report.md").read_text().startswith("# upgrade-impact eval")
+    assert "review_causes" in httpx_row["systems"]["upgrade-impact"]
+    assert summary["settings"]["recheck"] == "on"
+    report = (out / "report.md").read_text()
+    assert report.startswith("# upgrade-impact eval")
+    # A small run lists every case with what held it at "review".
+    assert "| Case | Label | Notes | Verdict |" in report
+    assert httpx_row["id"] in report
 
 
 def test_eval_gate_failure_exits_one(

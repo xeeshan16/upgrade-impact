@@ -64,6 +64,9 @@ class Prediction:
     affected: set[Place] = field(default_factory=set)
     possible: set[Place] = field(default_factory=set)
     verdict: str | None = None
+    # upgrade-impact only: what kept the verdict at "review", and lines it ruled out.
+    causes: dict[str, int] = field(default_factory=dict)
+    dismissed: dict[str, int] = field(default_factory=dict)
     runs: list[ModelRun] = field(default_factory=list)
     seconds: float = 0.0
     error: str | None = None
@@ -359,11 +362,16 @@ class UpgradeImpact:
             notes=ctx.notes,
         )
         affected, possible = report_places(report)
-        runs = [r for r in (report.model, report.adjudication) if r is not None]
+        runs = [r for r in (report.model, report.recheck, report.adjudication) if r is not None]
+        dismissed: dict[str, int] = {}
+        for item in report.dismissed:
+            dismissed[item.by] = dismissed.get(item.by, 0) + 1
         return Prediction(
             affected=affected,
             possible=possible,
             verdict=report.verdict,
+            causes=report.review_causes if report.verdict == "review" else {},
+            dismissed=dismissed,
             runs=runs,
             seconds=time.perf_counter() - started,
         )
