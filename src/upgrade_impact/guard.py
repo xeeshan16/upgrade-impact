@@ -34,10 +34,13 @@ _PATTERNS = (
     r"\byou are (?:now )?(?:an? |the )?(?:\w+\s+){0,2}?"
     r"(?:ai|assistant|language model|llm|chatbot)\b",
     r"\b(?:new|updated|real|hidden|secret)\s+(?:system\s+)?instructions?\b",
-    r"\bsystem\s+prompt\b",
+    r"\b(?:reveal|print|show|repeat)\s+(?:your|the)\s+system\s+prompt\b",
     r"^\W*(?:assistant|ai)\s*:\s",
     # "respond only with", "answer with no impact", "report that there is no impact"
-    r"\b(?:respond|reply|answer|output)\s+(?:only\s+)?with\b",
+    # (at the start of a sentence, or with "only": "close reply with a 10 second
+    # timeout" in uvicorn's notes is not an instruction)
+    r"\b(?:respond|reply|answer|output)\s+only\s+with\b",
+    r"(?:^|[.:;!]\s)[\W_]*(?:please\s+)?(?:respond|reply|answer)\s+with\b",
     r"\b(?:report|say|state|conclude|output|return)\s+(?:that\s+)?(?:there\s+is\s+)?"
     r"[\"'`]?(?:no[ -]impact|not[ _]affected|nothing to (?:change|fix))",
     # fence markers and the tool's own JSON keys
