@@ -100,6 +100,7 @@ def test_mine_then_eval(env: Path, tmp_path: Path, capsys: pytest.CaptureFixture
     assert ["app/main.py", 3] in httpx_row["systems"]["symbol-grep"]["affected"]
     assert httpx_row["systems"]["upgrade-impact"]["verdict"] in {"affected", "review"}
     assert "review_causes" in httpx_row["systems"]["upgrade-impact"]
+    assert httpx_row["systems"]["upgrade-impact"]["claims"]
     assert summary["settings"]["recheck"] == "on"
     report = (out / "report.md").read_text()
     assert report.startswith("# upgrade-impact eval")

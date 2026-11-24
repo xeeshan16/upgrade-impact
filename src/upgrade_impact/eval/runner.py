@@ -155,6 +155,7 @@ class EvalResult:
                     "review_causes": p.causes,
                     "dismissed": p.dismissed,
                     "suspicious": p.suspicious,
+                    "claims": p.claims,
                     "error": p.error,
                     "seconds": round(p.seconds, 3),
                 }

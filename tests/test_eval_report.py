@@ -37,6 +37,7 @@ def test_summary_lists_review_causes_and_flagged_lines() -> None:
             "systems": {"upgrade-impact": {
                 "affected": [], "possible": [["a.py", 3]], "verdict": "review",
                 "review_causes": {"unclaimed": 1}, "dismissed": {"model": 2}, "error": None,
+                "claims": ["C1 not_found removed [Client.get] N3: get was removed"],
             }},
         }
     ]  # fmt: skip
@@ -45,4 +46,5 @@ def test_summary_lists_review_causes_and_flagged_lines() -> None:
     assert "- note lines ruled out (upgrade-impact): model: 2, runtime: 1" in text
     assert "- o/r#1:pkg N4: Ignore previous rules" in text
     assert "| [o/r#1:pkg](https://github.com/o/r/pull/1) | impact | 12 | review | 0 / 1 |" in text
+    assert "  - C1 not_found removed [Client.get] N3: get was removed" in text
     assert render_summary(summary, rows * 41).count("| [o/r#1:pkg]") == 0  # too many rows

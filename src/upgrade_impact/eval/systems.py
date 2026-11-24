@@ -35,6 +35,7 @@ from upgrade_impact.eval.snapshot import PackageUsages
 from upgrade_impact.extract import BREAKING_HINT, fence_nonce, json_object
 from upgrade_impact.models import (
     BumpReport,
+    ClaimResult,
     ClaimStatus,
     Ecosystem,
     Match,
@@ -68,6 +69,7 @@ class Prediction:
     causes: dict[str, int] = field(default_factory=dict)
     dismissed: dict[str, int] = field(default_factory=dict)
     suspicious: list[str] = field(default_factory=list)
+    claims: list[str] = field(default_factory=list)
     runs: list[ModelRun] = field(default_factory=list)
     seconds: float = 0.0
     error: str | None = None
@@ -326,6 +328,23 @@ def report_places(report: BumpReport) -> tuple[set[Place], set[Place]]:
     return affected, possible - affected
 
 
+def describe_claim(result: ClaimResult) -> str:
+    """One line per claim for the eval's per-case listing:
+    ``C2 not_found default_changed [config | quiet=] N71: Default quiet to false``."""
+    claim = result.claim
+    names = " | ".join(
+        part
+        for part in (", ".join(claim.symbols), ", ".join(f"{p}=" for p in claim.parameters))
+        if part
+    )
+    cites = ",".join(f"N{ev.line}" for ev in claim.evidence if ev.verified)
+    found = f" ({len(result.matches)} match(es))" if result.matches else ""
+    return (
+        f"{claim.id} {result.status.value} {claim.kind.value} [{names or '-'}] {cites}{found}: "
+        f"{claim.summary[:120]}"
+    )
+
+
 class UpgradeImpact:
     name = "upgrade-impact"
     needs_model = True
@@ -374,6 +393,7 @@ class UpgradeImpact:
             causes=report.review_causes if report.verdict == "review" else {},
             dismissed=dismissed,
             suspicious=[f"N{line.n}: {line.text.strip()[:160]}" for line in report.suspicious],
+            claims=[describe_claim(r) for r in report.results],
             runs=runs,
             seconds=time.perf_counter() - started,
         )

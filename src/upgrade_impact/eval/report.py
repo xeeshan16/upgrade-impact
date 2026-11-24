@@ -19,6 +19,7 @@ def _pct(value: float | None, ci: list[float] | tuple[float, float] | None = Non
 # Per-case rows are listed when the run is this small (a real-model sample).
 MAX_CASE_ROWS = 40
 MAX_FLAGGED = 20
+MAX_CLAIMS = 12
 _CAUSES = {
     "possible": "possible matches",
     "no_api": "claims naming no API",
@@ -52,6 +53,16 @@ def _case_table(rows: list[dict[str, Any]]) -> list[str]:
             f"{verdict} | {len(p['affected'])} / {len(p['possible'])} | "
             f"{_causes(p.get('review_causes') or {})} | {ruled} |"
         )
+    with_claims = [
+        (row, p) for row in rows if (p := row["systems"].get("upgrade-impact")) and p.get("claims")
+    ]
+    if with_claims:
+        out += ["", "Claims per case (upgrade-impact):", ""]
+        for row, p in with_claims:
+            out.append(f"- {row['id']} ({row['label']}):")
+            out += [f"  - {c}" for c in p["claims"][:MAX_CLAIMS]]
+            if len(p["claims"]) > MAX_CLAIMS:
+                out.append(f"  - ... and {len(p['claims']) - MAX_CLAIMS} more")
     return out
 
 
