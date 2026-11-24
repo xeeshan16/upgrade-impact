@@ -59,8 +59,37 @@ All notable changes to this project are documented here. The format follows
   predictions; `--gate` fails on thresholds; `--per-label` takes a fixed sample.
 - CI runs the eval on the dev split with the fake provider behind a gate; the
   real-model workflow can run it on a dev sample with Ollama.
+- Runtime-support changes ("Drop support for Node.js 18", "requires Python
+  3.10 or later") are compared with the floor the project declares
+  (`engines.node`, `requires-python`, Poetry's `python`, `python_requires`)
+  and cite the manifest line: met, the claim is cleared; not met or not
+  declared, it stays "needs review" with the reason (ADR 0004).
+- Second reading of unclaimed note lines: breaking-looking lines no claim
+  cites go back to the model in a short prompt, one verified answer per line.
+  A "yes" becomes a claim; a "no" dismisses the line unless it names
+  something your code uses from the package. Dismissed lines are listed with
+  the reason. `UPGRADE_IMPACT_RECHECK=off` turns it off (ADR 0004).
+- Release-note lines that read like instructions to a model (prompt
+  injection) are reported, are never dismissed, and keep the answer from
+  "no impact".
+- Reports say why a bump is "review" (possible matches, claims naming no API,
+  unclaimed lines, injection-like lines).
+- The eval counts which causes held cases at "review" and the note lines
+  ruled out, lists injection-flagged lines, and for runs of up to 40 cases
+  lists every case and its claims in `report.md`.
 
 ### Changed
 
+- Section headings such as `### ⚠ BREAKING CHANGES` no longer count as
+  unclaimed breaking changes.
+- A changed default (or a behaviour change whose summary is about a default)
+  now matches the calls that do *not* pass the parameter; calls that set it
+  are unaffected. Before, it matched only calls passing it, the rule for a
+  removed argument (found by the eval on mdn/yari's dotenv 17 bump).
+- Changed-default phrasings ("Default `quiet` to false", "now defaults to")
+  mark a note line as breaking-looking.
+- Eval snapshots and downloaded PR code now include the root manifests
+  (`package.json`, `pyproject.toml`, `setup.cfg`, `setup.py`); eval snapshots
+  moved to `snapshots-v2` in the cache.
 - Prompt fence markers are derived from the fenced content instead of being
   random, so identical requests are identical and can be cached.

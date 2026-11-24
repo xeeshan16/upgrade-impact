@@ -231,3 +231,92 @@ injection checks and output validation), slice long changelogs by version,
 follow migration-guide links, the deprecation-history context for the
 govbr_auth false alarms, and calibrate "no impact", each measured on the dev
 split with a real model.
+
+
+## Day 4 — 2026-11-24: quality and safety ("no impact" has to be earned)
+
+Day 3's real-model eval on the fixed dev sample (qwen2.5:7b, 4 impact + 4
+clean cases,
+[run 45186482397](https://github.com/xeeshan16/upgrade-impact/actions/runs/45186482397))
+answered "review" for every case that had release notes and flagged no line:
+0% false alarms, but 0% detection, and never a "no impact". Its artifacts are
+not readable from the build sandbox, so the first change made the eval explain
+itself in the CI log; everything after that was found by reading it.
+
+Built:
+
+- **Runtime floor check** (`runtime.py`): "Drop support for Node.js v18",
+  "requires Python 3.10 or later" and similar are compared with the floor the
+  project declares (`engines.node`, `requires-python`, Poetry's `python`,
+  `python_requires`), at the precision the note uses, citing the manifest
+  line. Eval snapshots and PR downloads now include the root manifests.
+- **Second reading** (`recheck.py`): unclaimed breaking-looking note lines go
+  back to the model, 20 per call, one verified answer per line. "Yes" becomes
+  a claim; "no" dismisses the line unless it names something the code uses
+  from the package (the reachability guard). Failures keep the line.
+  `UPGRADE_IMPACT_RECHECK=off` disables it.
+- **Injection tripwire** (`guard.py`): note lines that read like instructions
+  to a model are reported, can't be dismissed, and keep a bump from "no
+  impact" (ADR 0004).
+- Section headings no longer count as unclaimed changes.
+- **Changed defaults**: matched to the calls that do *not* pass the parameter
+  (calls that set it are unaffected); changed-default phrasings mark a line as
+  breaking-looking; bare names in a default-change claim are parameters.
+- Reports say why a bump is "review" and list ruled-out lines; the eval
+  counts review causes and dismissals, lists injection-flagged lines and, for
+  small runs, every case and its claims.
+- ADR 0004.
+
+Found while building (each from the per-case output of a real-model run):
+
+- The clean bumps were held by `### ⚠ BREAKING CHANGES` headings, "Remove old
+  template" / "Remove outdated info from README" (sinon), "Remove
+  sinon.defaultConfig" (never called by nestjs/nest), and "Drop support for
+  Node.js v18" in a repository whose `package.json` requires `>= 20`.
+- With those settled, mdn/yari's dotenv 16 -> 17 bump turned into a false
+  "no impact"
+  ([run 45399424834](https://github.com/xeeshan16/upgrade-impact/actions/runs/45399424834)):
+  17.0.0 flipped the `quiet` default and the maintainer added `quiet: true` to
+  four `config()` calls. Three bugs stacked: the parameter rule matched only
+  calls that pass `quiet` (right for a removed argument, wrong for a default),
+  "Default `quiet` to false" matched no breaking keyword, and the model put
+  `quiet` in `symbols`. The safety net had been hiding all three behind
+  unrelated unclaimed lines. Fixed in that order, re-measured after each
+  ([45401201509](https://github.com/xeeshan16/upgrade-impact/actions/runs/45401201509),
+  [45404111514](https://github.com/xeeshan16/upgrade-impact/actions/runs/45404111514)).
+- The tripwire's first patterns flagged two real note lines in the dev split
+  (CI eval, fake provider): uvicorn's "waiting for the client's close reply
+  with a 10 second timeout" and an agent SDK's "...out of the system
+  prompt". The eval now lists flagged lines; "reply with" now has to start a
+  sentence (or say "only"), and a bare "system prompt" no longer counts. Both
+  lines are regression tests.
+
+Measured (qwen2.5:7b, same 8-case dev sample, at most 3 review calls per bump,
+[run 45405936719](https://github.com/xeeshan16/upgrade-impact/actions/runs/45405936719)):
+
+| | day 3 code | day 4 code |
+|---|---|---|
+| clean bumps answered "no impact" | 0 of 4 | 3 of 4 |
+| false alarms (strict / lenient) | 0% / 0% | 0% / 0% |
+| impact cases detected (strict / lenient) | 0% / 0% | 25% / 75% |
+| file recall (strict / lenient) | 0% / 0% | 20% / 80% |
+| lines flagged per case (lenient) | 0.0 | 7.4 |
+
+On the same sample symbol-grep detects 75% with 0% false alarms but flags 22.1
+lines per case; import-grep detects 100% with 100% false alarms. These cases
+drove today's fixes, so this is development progress on a tiny sample, not a
+result; the held-out split is scored on day 7. The remaining "review" on a
+clean bump (sinon) is a claim with no API ("one breaking change, which only
+affects sinon-test"); redis's 49 "possible" lines come from a default-change
+claim naming four options; ormar's `engine=` matches stay "possible" because
+the notes never name the API in a form the review accepts.
+
+Plan changes: following migration-guide links and the deprecation-history
+context move to day 6 if the real-model runs there show misses they would fix;
+embedding ranking and config-file usages move to the roadmap (no measured case
+needed them). See PLAN.
+
+Next (day 5): the GitHub Action (job summary, annotations, JSON output),
+grouped PRs with many packages, and the MCP server (`assess_bump`,
+`find_usages`, `get_release_notes`) with configs for Claude Code, Cursor and
+VS Code.

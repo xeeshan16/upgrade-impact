@@ -57,6 +57,16 @@ day 2). Deprecation history as review context: for "the deprecated X has now
 been removed", the earlier deprecation notice (outside the bump's range)
 usually names the API and its replacement. Everything measured on the dev split.
 
+*Adjusted on day 4 (see PROGRESS):* the day 3 real-model sample showed the
+bottleneck was calibration, not ranking: every clean bump came back "review".
+Day 4 went there: the runtime floor check, a guarded second reading of
+unclaimed lines, headings skipped, changed defaults matched to the calls that
+rely on them, injection tripwires, and per-case "why review" in the eval.
+Slicing changelogs by version range already existed (day 1). Following
+migration-guide links and the deprecation-history context move to day 6 if
+the real-model runs there show misses they would fix; embedding ranking and
+config-file usages move to the roadmap, since no measured case needed them.
+
 ## Day 5: where developers work
 A GitHub Action for bump PRs that writes the job summary and annotations and
 outputs JSON. Grouped PRs with many packages. An MCP server (`assess_bump`,

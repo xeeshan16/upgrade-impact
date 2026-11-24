@@ -6,10 +6,11 @@ breaking-change claims with a language model, finds the lines in your repository
 that use what changed, and cites both sides: a release-note line and a code line,
 each verified by code. If nothing is affected, it says so and tells you why.
 
-> **Status: day 3 of 7.** Works end to end for PyPI and npm bumps on Python and
-> JavaScript/TypeScript code, with a model review of borderline matches, and
-> ships an eval harness with a dataset of 259 real bump PRs. Real-model eval
-> numbers, the GitHub Action and the MCP server are the next milestones
+> **Status: day 4 of 7.** Works end to end for PyPI and npm bumps on Python and
+> JavaScript/TypeScript code, with a model review of borderline matches, a
+> calibrated "no impact" (runtime floor check, a guarded second reading of
+> unclaimed note lines, prompt-injection tripwires) and an eval harness with a
+> dataset of 259 real bump PRs. The GitHub Action and the MCP server are next
 > ([plan](docs/PLAN.md), [progress](docs/PROGRESS.md)).
 
 ## What it does
@@ -66,7 +67,7 @@ matches are all `ASGITransport(app=...)` calls, i.e. false alarms. Before the ru
 qwen2.5:7b called six of the twelve it read "affected"; with it, all twelve stay
 "possible" and none is promoted. The review needs more context than these notes
 give to clear them (the 0.27.0 deprecation notice that names the replacement), which
-is planned for day 4.
+is still open (see [Limitations](#limitations-day-4)).
 
 Both outputs are from the [`real-model` workflow](.github/workflows/real-model.yml)
 ([run 45027489304](https://github.com/xeeshan16/upgrade-impact/actions/runs/45027489304),
@@ -108,7 +109,9 @@ flowchart LR
   X --> V[Verify citations<br/>quote on cited line, symbols in notes]
   PR --> C[Code<br/>local checkout or PR tarball]
   C --> I[Usage index<br/>Python ast / JS+TS tree-sitter]
-  V --> M[Deterministic matching]
+  V --> U[Unclaimed breaking-looking lines<br/>runtime floor check, then a second reading]
+  U --> M[Deterministic matching<br/>+ runtime floor for runtime claims]
+  V --> M
   I --> M
   M --> A[LLM review of uncertain matches<br/>code window + note lines -> cited verdicts]
   A --> W[Verify both citations<br/>unverified = unclear]
@@ -144,6 +147,25 @@ flowchart LR
    lines stay in the report with the reason. See
    [ADR 0002](docs/adr/0002-model-review-of-candidates-with-two-sided-citations.md).
    Replies are cached on disk, so a re-run costs nothing.
+7. **Earning "no impact".** A note line that reads like a breaking change and
+   that no claim cites holds the bump at "review", because small models skip
+   lines. Such a line can leave that list three ways: it is a section heading;
+   it is a runtime drop ("Drop support for Node.js 18") that the project's
+   declared floor (`engines.node`, `requires-python`, `python_requires`)
+   already meets, which is checked by code and cites the manifest line; or a
+   second, focused model reading (20 lines per call) quotes the line and says
+   it does not change the package's API, and the line names nothing your code
+   uses from the package. A "yes" in that reading becomes a claim like any
+   other. Runtime claims are checked against the same floor. Every ruled-out
+   line is listed with who ruled it out and why, and the report says what
+   keeps a bump at "review". See
+   [ADR 0004](docs/adr/0004-earning-no-impact.md).
+8. **Untrusted notes.** Release notes and PR bodies are written by whoever
+   publishes the package. They are fenced with a content-derived marker and
+   called data, every claim must quote them, and lines that read like
+   instructions to a model (or try to close the fence, or speak the tool's
+   JSON) are flagged: a flagged line can't be ruled out and keeps the bump
+   from "no impact".
 
 ## Evaluation
 
@@ -188,10 +210,31 @@ the two baselines that need no model:
 
 That is the bar: grepping imports finds most broken files but flags every clean
 bump (every case's package is imported somewhere, by construction), and grepping
-the notes' identifiers misses about three impact cases in four. upgrade-impact
-and the naive prompt have no real-model numbers yet; CI runs them with the
-fake provider only to keep the pipeline honest (`data/gate.json`). Real-model
-runs on the dev split are next; the held-out test split is scored once, on
+the notes' identifiers misses about three impact cases in four. (Those two rows
+predate day 4, which taught the breaking-line filter that symbol-grep also uses
+about changed defaults; CI re-measures them on every push.)
+
+**Real model, dev sample.** qwen2.5:7b on Ollama, on a CPU GitHub runner, on a
+fixed sample of 8 dev cases (4 impact, 4 clean, 7 repositories; at most 3
+review calls per bump), all four systems on the same notes and code
+([run 45405936719](https://github.com/xeeshan16/upgrade-impact/actions/runs/45405936719),
+commit `bc6692f`):
+
+| System | Scoring | File precision | File recall | Detected | False alarms | Lines/case |
+|---|---|---|---|---|---|---|
+| upgrade-impact | strict | 100% | 20.0% | 25.0% | 0% | 0.2 |
+| upgrade-impact | lenient | 66.7% | 80.0% | 75.0% | 0% | 7.4 |
+| import-grep | strict | 55.6% | 100% | 100% | 100% | 19.2 |
+| symbol-grep | strict | 61.5% | 80.0% | 75.0% | 0% | 22.1 |
+| naive-prompt | strict | 0% | 0% | 0% | 100% | 1.2 |
+
+upgrade-impact's own answer: 3 of 4 clean bumps "no impact" and 1 "review";
+impact cases 1 "affected", 2 "review", 1 "unknown" (no release notes found).
+On the same sample the day 3 code answered "review" for all 7 cases with notes
+and flagged no line; the day 4 changes (ADR 0004 and the changed-default fixes)
+were found by reading this sample's per-case output, so these numbers measure
+development progress, not generalisation. Eight cases give intervals too wide to
+rank systems (see the run's report); the held-out test split is scored once, on
 day 7.
 
 ## Configuration
@@ -204,6 +247,7 @@ day 7.
 | notes chunk size | `UPGRADE_IMPACT_NOTES_BUDGET_TOKENS` | `3000` tokens per extraction call |
 | timeout / retries | `UPGRADE_IMPACT_TIMEOUT_S`, `UPGRADE_IMPACT_MAX_RETRIES` | `300`, `3` |
 | review cap | `UPGRADE_IMPACT_MAX_CANDIDATES`, `UPGRADE_IMPACT_MAX_REVIEW_CALLS` | `12` code candidates per claim, `8` uncached review calls per bump (`--no-review` turns review off) |
+| second reading | `UPGRADE_IMPACT_RECHECK` | `on`: re-read unclaimed breaking-looking note lines (`off` leaves them for you) |
 | reply cache | `UPGRADE_IMPACT_LLM_CACHE` | `on` (`off` or `--no-cache` to bypass) |
 | cache dir | `UPGRADE_IMPACT_CACHE_DIR` | `~/.cache/upgrade-impact` (downloaded PR code, model replies, eval clones and notes) |
 | git host for `mine`/`eval` | `UPGRADE_IMPACT_GIT_URL` | `https://github.com` |
@@ -227,7 +271,7 @@ GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
   would catch undocumented changes but costs far more and misses behaviour
   changes; notes are what maintainers write for exactly this purpose.
 
-## Limitations (day 3)
+## Limitations (day 4)
 
 - Instance types are inferred within one file and without flow analysis: an
   instance created in one module and used in another is not resolved, and a
@@ -235,9 +279,17 @@ GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
 - Config files (`pytest.ini`, `setup.cfg`, bundler configs) are not indexed.
 - Candidate ranking for claims that name no symbol is lexical; embeddings are
   an extension point, not built yet.
+- The second reading's guard is lexical: a ruled-out line that describes a
+  change to something your code uses without naming it can get through. The
+  runtime check reads only the root manifest (not `.nvmrc`, CI matrices or
+  workspace packages).
+- Deprecation history is not used yet: "the deprecated `app` argument has now
+  been removed" does not say which API, and the earlier notice that does is
+  outside the bump's range (the govbr_auth false alarms above).
 - Version ranges in titles such as `>=0.27,<0.29` resolve to the lower bound.
-- No real-model eval numbers yet (see [Evaluation](#evaluation)). The dataset's
-  labels are what maintainers changed, which includes some unrelated cleanup
+- Real-model eval numbers so far come from an 8-case dev sample on a CPU
+  runner (see [Evaluation](#evaluation)); the held-out split is scored on day 7.
+  The dataset's labels are what maintainers changed, which includes some unrelated cleanup
   and misses fixes that landed in later PRs (ADR 0003).
 
 ## Development
