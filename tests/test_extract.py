@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from upgrade_impact.extract import (
+    BREAKING_HINT,
     CLAIMS_SCHEMA,
     build_prompt,
     extract_claims,
@@ -407,3 +408,11 @@ def test_section_headings_are_not_unclaimed_changes() -> None:
     assert uncovered_lines(notes, []) == [2, 4]
     assert is_heading("* ⚠️ Breaking Changes")
     assert not is_heading("Removed `foo`")
+
+
+def test_changed_defaults_read_like_breaking_changes() -> None:
+    # dotenv 17.0.0 flipped `quiet`; mdn/yari had to pass quiet: true.
+    assert BREAKING_HINT.search("- Default `quiet` to false - informational runtime log message")
+    assert BREAKING_HINT.search("`timeout` now defaults to 5 seconds")
+    assert BREAKING_HINT.search("We changed the default encoding to utf-8")
+    assert not BREAKING_HINT.search("- Add `populate` convenience method")

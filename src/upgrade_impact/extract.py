@@ -106,7 +106,10 @@ CLAIMS_SCHEMA: dict[str, Any] = {
 BREAKING_HINT = re.compile(
     r"\b(removed?|removal|renamed?|no longer|breaking|incompatible|dropped|drop(?:s|ped)? "
     r"support|now (?:raises|requires|returns|defaults)|is now required|must now|"
-    r"(?:has|have) been (?:removed|renamed|replaced)|replaced by|instead of)\b",
+    r"(?:has|have) been (?:removed|renamed|replaced)|replaced by|instead of|"
+    # changed defaults: "Default `quiet` to false", "now defaults to", "changed the default"
+    r"default(?:s|ed)?\s+(?:`[^`]{1,60}`\s+)?(?:to|is now|has changed|changed)|"
+    r"now defaults?|change[ds]? the default)\b",
     re.I,
 )
 
