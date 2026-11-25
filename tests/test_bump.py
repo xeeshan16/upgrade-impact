@@ -7,6 +7,7 @@ from upgrade_impact.bump import (
     FileDiff,
     bumps_from_manifest,
     infer_ecosystem,
+    is_group_title,
     parse_body_table,
     parse_title,
     patch_lines,
@@ -72,6 +73,92 @@ def test_renovate_body_table() -> None:
         ("express", "4.21.2", "5.0.1"),
         ("@types/express", "4.17.21", "5.0.0"),
     ]
+
+
+DEPENDABOT_GROUP_LINES = """Bumps the pip group with 2 updates in the / directory: \
+[httpx](https://github.com/encode/httpx) and [pydantic](https://github.com/pydantic/pydantic).
+
+Updates `httpx` from 0.27.2 to 0.28.0
+<details>
+<summary>Release notes</summary>
+<blockquote>
+Updates `h11` from 0.14.0 to 0.16.0
+| [anyio](https://github.com/agronholm/anyio) | `3.7.1` | `4.0.0` |
+</blockquote>
+</details>
+<details>
+<summary>Commits</summary>
+<ul><li>Version 0.28.0</li></ul>
+</details>
+<br />
+
+Updates `pydantic` from 2.9.2 to 2.10.0
+<details>
+<summary>Changelog</summary>
+</details>
+"""
+
+DEPENDABOT_GROUP_TABLE = """Bumps the npm_and_yarn group with 3 updates in the / directory:
+
+| Package | From | To |
+| --- | --- | --- |
+| [@babel/core](https://github.com/babel/babel/tree/HEAD/packages/babel-core) | `7.24.0` | `7.26.0` |
+| [vite](https://github.com/vitejs/vite/tree/HEAD/packages/vite) | `5.4.11` | `6.0.1` |
+| [typescript](https://github.com/microsoft/TypeScript) | `5.6.3` | `5.7.2` |
+"""
+
+
+def test_dependabot_group_updates_lines_skip_quoted_notes() -> None:
+    # The h11 and anyio lines sit inside the quoted release notes: not this PR's bumps.
+    assert parse_body_table(DEPENDABOT_GROUP_LINES) == [
+        ("httpx", "0.27.2", "0.28.0"),
+        ("pydantic", "2.9.2", "2.10.0"),
+    ]
+
+
+def test_dependabot_group_table() -> None:
+    assert parse_body_table(DEPENDABOT_GROUP_TABLE) == [
+        ("@babel/core", "7.24.0", "7.26.0"),
+        ("vite", "5.4.11", "6.0.1"),
+        ("typescript", "5.6.3", "5.7.2"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Bump the pip group across 1 directory with 3 updates",
+        "chore(deps): bump the npm_and_yarn group in /web with 12 updates",
+        "Bump the minor-and-patch group with 1 update",
+    ],
+)
+def test_group_titles(title: str) -> None:
+    assert is_group_title(title)
+    assert not is_group_title("Bump httpx from 0.27.0 to 0.28.1")
+
+
+def test_grouped_pr_gives_one_bump_per_package() -> None:
+    bumps = resolve_bumps(
+        title="Bump the pip group across 1 directory with 2 updates",
+        body=DEPENDABOT_GROUP_LINES,
+        files=[FileDiff("requirements.txt", ["httpx==0.27.2"], ["httpx==0.28.0"])],
+        head_ref="dependabot/pip/pip-abc123",
+    )
+    # httpx from the manifest diff, pydantic (bumped in a lock file only) from the body.
+    assert [(b.package, b.from_version, b.to_version, b.source) for b in bumps] == [
+        ("httpx", "0.27.2", "0.28.0", "manifest-diff"),
+        ("pydantic", "2.9.2", "2.10.0", "pr-body"),
+    ]
+    assert {b.ecosystem for b in bumps} == {Ecosystem.PYPI}
+
+
+def test_grouped_pr_with_no_packages_found_says_so() -> None:
+    with pytest.raises(BumpError, match="grouped update"):
+        resolve_bumps(
+            title="Bump the pip group with 2 updates",
+            body="Bumps the pip group with 2 updates.",
+            files=[FileDiff("uv.lock", [], [])],
+        )
 
 
 def test_requirements_diff() -> None:

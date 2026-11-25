@@ -251,6 +251,28 @@ def _changelog_fill(
         return
 
 
+_UPDATES_MARKER = re.compile(
+    r"^[ \t]*Updates?[ \t]+`(?P<pkg>@?[\w./-]+)`[ \t]+from[ \t].*$", re.I | re.M
+)
+
+
+def body_for_package(body: str, package: str) -> str:
+    """The part of a PR body that belongs to ``package``.
+
+    A grouped or multi-package Dependabot PR quotes each package's notes after an
+    ``Updates `pkg` from A to B`` line; only the block after this package's line
+    (up to the next one) is its notes. A body without such lines is one package's.
+    """
+    markers = list(_UPDATES_MARKER.finditer(body or ""))
+    if not markers:
+        return body or ""
+    for i, marker in enumerate(markers):
+        if marker.group("pkg").lower() == package.lower():
+            end = markers[i + 1].start() if i + 1 < len(markers) else len(body)
+            return body[marker.end() : end]
+    return ""
+
+
 def collect_notes(
     bump: Bump,
     info: PackageInfo | None,
@@ -276,7 +298,7 @@ def collect_notes(
 
     sections = sorted(by_version.values(), key=lambda s: Ver(s.version))
     if not sections and pr_body:
-        lines = clean_lines(pr_body)
+        lines = clean_lines(body_for_package(pr_body, bump.package))
         if lines:
             warnings.append("release notes taken from the PR body, which may be truncated")
             sections = [NotesSection(version=bump.to_version, source="pr-body", lines=lines)]

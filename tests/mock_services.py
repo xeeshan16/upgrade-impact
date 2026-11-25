@@ -31,6 +31,23 @@ PR_FILES = [
         "patch": "@@ -1,2 +1,2 @@\n-httpx==0.27.0\n+httpx==0.28.1\n rich==13.9.4",
     }
 ]
+# A Dependabot grouped update: httpx is pinned in requirements.txt, rich only
+# moved in the lock file, so it is listed in the body alone.
+GROUP_PR = {
+    "number": 10,
+    "title": "Bump the pip group across 1 directory with 2 updates",
+    "body": "Bumps the pip group with 2 updates in the / directory: "
+    "[httpx](https://github.com/encode/httpx) and [rich](https://github.com/Textualize/rich).\n\n"
+    "Updates `httpx` from 0.27.0 to 0.28.1\n<details>\n<summary>Release notes</summary>\n"
+    "<blockquote>\nUpdates `h11` from 0.14.0 to 0.16.0\n</blockquote>\n</details>\n\n"
+    "Updates `rich` from 13.9.4 to 14.0.0\n<details>\n<summary>Commits</summary>\n</details>\n",
+    "head": {"ref": "dependabot/pip/pip-1a2b3c", "sha": "a" * 40},
+    "base": {"ref": "main", "sha": "b" * 40},
+}
+GROUP_PR_FILES = [
+    PR_FILES[0],
+    {"filename": "uv.lock", "status": "modified", "patch": "@@ -1 +1 @@\n-x\n+y"},
+]
 RELEASES = [
     {
         "tag_name": "0.28.0",
@@ -85,6 +102,10 @@ class Services:
             routes: dict[str, object] = {
                 "/repos/owner/repo/pulls/9": PR,
                 "/repos/owner/repo/pulls/9/files": PR_FILES
+                if request.url.params.get("page") == "1"
+                else [],
+                "/repos/owner/repo/pulls/10": GROUP_PR,
+                "/repos/owner/repo/pulls/10/files": GROUP_PR_FILES
                 if request.url.params.get("page") == "1"
                 else [],
                 "/repos/encode/httpx/releases": RELEASES,

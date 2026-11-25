@@ -14,6 +14,10 @@ from upgrade_impact.models import (
     Report,
 )
 
+# GitHub shows at most 10 annotations of each level per step; a few more than
+# that would be dropped silently, so the rest are counted in one notice.
+MAX_ANNOTATIONS = 10
+
 MAX_MATCHES_SHOWN = 8
 
 _LANGUAGE = {Ecosystem.PYPI: "Python", Ecosystem.NPM: "JavaScript/TypeScript"}
@@ -221,9 +225,36 @@ def _text_header(report: BumpReport) -> list[str]:
     return out
 
 
+def _bump_line(report: BumpReport) -> str:
+    bump = report.bump
+    affected = len(
+        {
+            (m.usage.path, m.usage.line)
+            for r in report.results
+            if r.status == ClaimStatus.AFFECTED
+            for m in r.matches
+        }
+    )
+    detail = f"{affected} affected line(s)" if affected else ""
+    if report.verdict == "review":
+        detail = "; ".join(report.review_reasons)
+    return f"{bump.package} {bump.from_version or '?'} -> {bump.to_version}" + (
+        f": {detail}" if detail else ""
+    )
+
+
+def _text_overview(report: Report) -> list[str]:
+    if len(report.bumps) < 2:
+        return []
+    out = [f"upgrade-impact: {len(report.bumps)} bumps in {report.source}: {report.verdict}"]
+    out.extend(f"  {b.verdict:<9}  {_bump_line(b)}" for b in report.ordered())
+    out.append("")
+    return out
+
+
 def render_text(report: Report) -> str:
-    out: list[str] = []
-    for bump_report in report.bumps:
+    out: list[str] = _text_overview(report)
+    for bump_report in report.ordered():
         out.extend(_text_header(bump_report))
         for result in bump_report.results:
             out.extend(_text_result(result))
@@ -238,9 +269,29 @@ def render_text(report: Report) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def _markdown_overview(report: Report) -> list[str]:
+    if len(report.bumps) < 2:
+        return []
+    out = [
+        f"**{len(report.bumps)} bumps: {_VERDICT_TEXT[report.verdict]}**",
+        "",
+        "| verdict | package | change | why |",
+        "|---|---|---|---|",
+    ]
+    for b in report.ordered():
+        line = _bump_line(b)
+        why = line.split(": ", 1)[1] if ": " in line else ""
+        out.append(
+            f"| {b.verdict} | `{b.bump.package}` | {b.bump.from_version or '?'} → "
+            f"{b.bump.to_version} | {why.replace('|', chr(92) + '|')} |"
+        )
+    out.append("")
+    return out
+
+
 def render_markdown(report: Report) -> str:
-    out: list[str] = []
-    for bump_report in report.bumps:
+    out: list[str] = _markdown_overview(report)
+    for bump_report in report.ordered():
         bump = bump_report.bump
         out.append(f"### `{bump.package}` {bump.from_version or '?'} → {bump.to_version}")
         out.append("")
@@ -316,3 +367,68 @@ def render_markdown(report: Report) -> str:
             out.append(f"> {warning}")
         out.append("")
     return "\n".join(out).rstrip() + "\n"
+
+
+def _escape_data(text: str) -> str:
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def _escape_property(text: str) -> str:
+    return _escape_data(text).replace(":", "%3A").replace(",", "%2C")
+
+
+def _command(level: str, message: str, *, title: str, path: str | None, line: int | None) -> str:
+    props = []
+    if path:
+        props.append(f"file={_escape_property(path)}")
+        if line:
+            props.append(f"line={line}")
+    props.append(f"title={_escape_property(title)}")
+    return f"::{level} {','.join(props)}::{_escape_data(message)}"
+
+
+def render_annotations(report: Report) -> str:
+    """GitHub Actions workflow commands: a ``warning`` on every affected code line,
+    a ``notice`` on every possible one, each naming the claim and its note line.
+    Paths are relative to the analysed repository root, which in a workflow is
+    the checkout, so they land on the PR's files."""
+    warnings: list[str] = []
+    notices: list[str] = []
+    seen: set[tuple[str, str, int]] = set()
+    for bump_report in report.ordered():
+        bump = bump_report.bump
+        for result in bump_report.results:
+            if result.status not in (ClaimStatus.AFFECTED, ClaimStatus.POSSIBLE):
+                continue
+            if _imports_only(result):
+                continue
+            cites = ", ".join(f"N{line}" for line, _, _, _ in _quote(result))
+            for match in result.matches:
+                usage = match.usage
+                key = (bump.package, usage.path, usage.line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                title = f"{bump.package} {bump.to_version}: {result.claim.kind.value}"
+                message = f"{result.claim.summary} (release notes {cites or 'unverified'})"
+                message += f"\n{match.reason}"
+                if decision := _decision(match):
+                    message += f"\n{decision}"
+                bucket = warnings if result.status == ClaimStatus.AFFECTED else notices
+                level = "warning" if bucket is warnings else "notice"
+                bucket.append(
+                    _command(level, message, title=title, path=usage.path, line=usage.line)
+                )
+    out = warnings[:MAX_ANNOTATIONS] + notices[:MAX_ANNOTATIONS]
+    hidden = max(0, len(warnings) - MAX_ANNOTATIONS) + max(0, len(notices) - MAX_ANNOTATIONS)
+    if hidden:
+        out.append(
+            _command(
+                "notice",
+                f"{hidden} more matched line(s) are listed in the job summary and the JSON report.",
+                title="upgrade-impact",
+                path=None,
+                line=None,
+            )
+        )
+    return "\n".join(out) + ("\n" if out else "")

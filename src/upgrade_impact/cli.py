@@ -9,6 +9,9 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
+
+from packaging.utils import canonicalize_name
 
 from upgrade_impact import __version__
 from upgrade_impact.bump import BumpError
@@ -36,24 +39,24 @@ from upgrade_impact.pipeline import (
 )
 from upgrade_impact.providers.cache import CachingChat
 from upgrade_impact.providers.factory import build_chat
-from upgrade_impact.render import render_markdown, render_text
+from upgrade_impact.render import render_annotations, render_markdown, render_text
 from upgrade_impact.sources.github import GitHubClient, GitHubError, parse_pr_url, token_from_env
 from upgrade_impact.sources.registry import RegistryClient
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+EXIT_FAIL_ON = 3  # the check ran and its verdict met --fail-on
+FAIL_ON = {
+    "affected": ("affected",),
+    "review": ("affected", "review"),
+    "unknown": ("affected", "review", "unknown"),
+    "never": (),
+}
 SYSTEM_NAMES = ("upgrade-impact", "import-grep", "symbol-grep", "naive-prompt")
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="upgrade-impact",
-        description="Tell whether a dependency bump touches your code, where, and why.",
-    )
-    parser.add_argument("--version", action="version", version=f"upgrade-impact {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
-
+def _add_check(sub: Any) -> None:
     check = sub.add_parser(
         "check",
         help="check a Dependabot/Renovate PR, a manifest diff, or an explicit bump",
@@ -105,7 +108,44 @@ def _parser() -> argparse.ArgumentParser:
         "--format", choices=("text", "markdown", "json"), default="text", help="output format"
     )
     check.add_argument("-o", "--output", type=Path, help="write the report here instead of stdout")
+    check.add_argument(
+        "--only",
+        action="append",
+        metavar="PACKAGE",
+        help="check only this package of a grouped PR or multi-package diff (repeatable)",
+    )
+    check.add_argument(
+        "--json-out", type=Path, help="also write the JSON report here (any --format)"
+    )
+    check.add_argument(
+        "--summary-file",
+        type=Path,
+        help="also append the Markdown report to this file (e.g. $GITHUB_STEP_SUMMARY)",
+    )
+    check.add_argument(
+        "--annotate",
+        action="store_true",
+        help="print GitHub Actions annotations for affected and possible code lines",
+    )
+    check.add_argument(
+        "--fail-on",
+        choices=tuple(FAIL_ON),
+        default="never",
+        help=f"exit {EXIT_FAIL_ON} when the verdict is this or worse "
+        "(affected < review < unknown; default: never)",
+    )
     check.add_argument("-v", "--verbose", action="store_true", help="log progress to stderr")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="upgrade-impact",
+        description="Tell whether a dependency bump touches your code, where, and why.",
+    )
+    parser.add_argument("--version", action="version", version=f"upgrade-impact {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    _add_check(sub)
 
     mine = sub.add_parser(
         "mine",
@@ -204,6 +244,18 @@ def _target(args: argparse.Namespace, github: GitHubClient) -> Target:
     )
 
 
+def _only(target: Target, wanted: list[str] | None) -> Target:
+    if not wanted:
+        return target
+    keys = {canonicalize_name(w) for w in wanted}
+    kept = [b for b in target.bumps if canonicalize_name(b.package) in keys]
+    if not kept:
+        found = ", ".join(b.package for b in target.bumps) or "none"
+        raise CheckError(f"--only matched no bump in {target.source} (found: {found})")
+    target.bumps = kept
+    return target
+
+
 def _check(args: argparse.Namespace) -> int:
     settings = load_settings(
         overrides={"provider": args.provider, "model": args.model, "base_url": args.base_url}
@@ -215,7 +267,7 @@ def _check(args: argparse.Namespace) -> int:
     )
     registry = RegistryClient(pypi_url=settings.pypi_url, npm_url=settings.npm_registry_url)
     try:
-        target = _target(args, github)
+        target = _only(_target(args, github), args.only)
         chat = None if args.no_llm else build_chat(settings)
         if chat is not None and settings.llm_cache == "on" and not args.no_cache:
             chat = CachingChat(chat, default_cache_dir(settings, os.environ) / "llm")
@@ -242,6 +294,20 @@ def _check(args: argparse.Namespace) -> int:
         args.output.write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
+    if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    if args.summary_file:
+        with args.summary_file.open("a", encoding="utf-8") as handle:
+            handle.write(render_markdown(report) + "\n")
+    if args.annotate:
+        sys.stdout.write(render_annotations(report))
+    if report.verdict in FAIL_ON[args.fail_on]:
+        print(
+            f"upgrade-impact: verdict {report.verdict!r} meets --fail-on {args.fail_on}",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL_ON
     return EXIT_OK
 
 

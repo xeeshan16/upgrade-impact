@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class Ecosystem(StrEnum):
@@ -323,8 +323,10 @@ class BumpReport(BaseModel):
     def count(self, status: ClaimStatus) -> int:
         return sum(1 for r in self.results if r.status == status)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def verdict(self) -> str:
+        """``affected``, ``review``, ``unknown`` (no release notes) or ``no-impact``."""
         if self.count(ClaimStatus.AFFECTED):
             return "affected"
         if self.review_reasons:
@@ -349,6 +351,7 @@ class BumpReport(BaseModel):
         }
         return {k: v for k, v in causes.items() if v}
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def review_reasons(self) -> list[str]:
         """Why the answer is "review" rather than "no impact" (empty otherwise)."""
@@ -367,8 +370,40 @@ class BumpReport(BaseModel):
         return reasons
 
 
+# Most severe first: the order a report lists its bumps in, and how the verdict of a
+# multi-package (grouped) PR is formed.
+VERDICT_ORDER = ("affected", "review", "unknown", "no-impact")
+
+
+def verdict_rank(verdict: str) -> int:
+    return VERDICT_ORDER.index(verdict) if verdict in VERDICT_ORDER else len(VERDICT_ORDER)
+
+
 class Report(BaseModel):
     source: str
     repository_root: str
     bumps: list[BumpReport] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def verdict(self) -> str:
+        """The most severe bump verdict: one affected package makes the PR affected."""
+        if not self.bumps:
+            return "unknown"
+        return min((b.verdict for b in self.bumps), key=verdict_rank)
+
+    def ordered(self) -> list[BumpReport]:
+        """Bumps, most severe verdict first (stable within a verdict)."""
+        return sorted(self.bumps, key=lambda b: verdict_rank(b.verdict))
+
+    def affected_lines(self) -> int:
+        """Distinct code lines in claims whose status is affected."""
+        seen = {
+            (b.bump.package, m.usage.path, m.usage.line)
+            for b in self.bumps
+            for r in b.results
+            if r.status == ClaimStatus.AFFECTED
+            for m in r.matches
+        }
+        return len(seen)

@@ -176,3 +176,20 @@ def test_release_notes_json_round_trip() -> None:
     again = ReleaseNotes.model_validate(json.loads(notes.model_dump_json()))
     assert again.line(2) is not None
     assert again.line(3) is None
+
+
+def test_body_for_package_slices_a_grouped_body() -> None:
+    from upgrade_impact.notes import body_for_package
+
+    body = (
+        "Bumps the pip group with 2 updates: [a](x) and [b](y).\n\n"
+        "Updates `a` from 1.0 to 2.0\n<details><blockquote>a removed `foo`</blockquote></details>\n"
+        "Updates `b` from 3.0 to 4.0\n<details><blockquote>b renamed `bar`</blockquote></details>\n"
+    )
+    assert "a removed" in body_for_package(body, "A")
+    assert "b renamed" not in body_for_package(body, "a")
+    assert "b renamed" in body_for_package(body, "b")
+    assert "Updates `b`" not in body_for_package(body, "b")
+    assert body_for_package(body, "c") == ""
+    single = "Bumps [a](x) from 1.0 to 2.0.\n<details>notes</details>"
+    assert body_for_package(single, "a") == single

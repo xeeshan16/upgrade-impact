@@ -4,8 +4,13 @@ Three sources, most precise first:
 
 1. the manifest diff (``requirements*.txt``, ``pyproject.toml``, ``Pipfile``,
    ``package.json``): exact names and the old and new specifiers;
-2. the Renovate PR-body table (``| [pkg](...) | `1.0.0` -> `2.0.0` |``);
+2. the PR body: Renovate's table (``| [pkg](...) | `1.0.0` -> `2.0.0` |``),
+   Dependabot's group table (``| [pkg](...) | `1.0.0` | `2.0.0` |``) and its
+   ``Updates `pkg` from 1.0.0 to 2.0.0`` lines;
 3. the PR title (Dependabot ``Bump X from A to B``, Renovate ``Update dependency X to vB``).
+
+Grouped PRs (``Bump the pip group with 3 updates``) carry one bump per package;
+every one of them is returned.
 
 Lock files are ignored: they also list transitive dependencies, which would
 turn one bump into dozens.
@@ -46,6 +51,17 @@ _BODY_CHANGE = re.compile(
     r"`?(?P<from>v?\d[^`|\s]*)`?\s*(?:->|→|&#8594;)\s*`?(?P<to>v?\d[^`|\s\]]*)`?"
 )
 _BODY_NAME = re.compile(r"^\s*\[?(?P<name>@?[\w./-]+)")
+_BODY_VERSION_CELL = re.compile(r"^\s*`?(?P<v>v?\d[^`|\s]*)`?\s*$")
+_BODY_UPDATES = re.compile(
+    r"^\s*(?:[-*]\s+)?Updates?\s+`?(?P<pkg>@?[\w./-]+)`?\s+from\s+`?(?P<from>v?\d[^`\s]*)`?"
+    r"\s+to\s+`?(?P<to>v?\d[^`\s]*?)`?\.?\s*$",
+    re.I,
+)
+GROUP_TITLE = re.compile(
+    r"^bump the (?P<group>\S+) group(?: across \d+ director(?:y|ies))?(?: in \S+)?"
+    r" with \d+ updates?",
+    re.I,
+)
 
 REQUIREMENTS_FILE = re.compile(
     r"(?:^|/)(?:(?:requirements|constraints)[^/]*|requirements/[^/]+)\.(?:txt|in)$", re.I
@@ -102,22 +118,57 @@ def parse_title(title: str) -> tuple[str, str | None, str] | None:
     return None
 
 
+def is_group_title(title: str) -> bool:
+    """A Dependabot grouped-update title (``Bump the npm group with 4 updates``)."""
+    return bool(GROUP_TITLE.match(_CONVENTIONAL_PREFIX.sub("", title.strip()).strip()))
+
+
+def _table_row(line: str) -> tuple[str, str, str] | None:
+    cells = line.strip().strip("|").split("|")
+    name = _BODY_NAME.match(cells[0]) if cells else None
+    if not name:
+        return None
+    change = _BODY_CHANGE.search("|".join(cells[1:]))
+    if change:
+        start, end = change.group("from"), change.group("to")
+    elif len(cells) >= 3 and (
+        (old := _BODY_VERSION_CELL.match(cells[1])) and (new := _BODY_VERSION_CELL.match(cells[2]))
+    ):
+        # Dependabot's group table: | Package | From | To |
+        start, end = old.group("v"), new.group("v")
+    else:
+        return None
+    start_v, end_v = _clean_version(start), _clean_version(end)
+    if not start_v or not end_v:
+        return None
+    return _clean_package(name.group("name")), start_v, end_v
+
+
 def parse_body_table(body: str) -> list[tuple[str, str, str]]:
-    """Renovate's ``| Package | Change |`` rows."""
-    rows: list[tuple[str, str, str]] = []
+    """``(package, from, to)`` from a PR body: Renovate's ``| Package | Change |``
+    rows, Dependabot's ``| Package | From | To |`` group table and its
+    ``Updates `pkg` from A to B`` lines. Each package is listed once.
+
+    Lines inside ``<details>`` blocks are skipped: that is where Dependabot quotes
+    the package's own release notes and commits, which are not this PR's bumps."""
+    rows: dict[str, tuple[str, str, str]] = {}
+    depth = 0
     for line in (body or "").splitlines():
-        if not line.startswith("|"):
+        lowered = line.lower()
+        depth += lowered.count("<details")
+        if depth > 0:
+            depth = max(0, depth - lowered.count("</details>"))
             continue
-        cells = line.strip().strip("|").split("|")
-        name = _BODY_NAME.match(cells[0]) if cells else None
-        change = _BODY_CHANGE.search("|".join(cells[1:]))
-        if not name or not change:
-            continue
-        start = _clean_version(change.group("from"))
-        end = _clean_version(change.group("to"))
-        if start and end:
-            rows.append((_clean_package(name.group("name")), start, end))
-    return rows
+        row: tuple[str, str, str] | None = None
+        if line.startswith("|"):
+            row = _table_row(line)
+        elif match := _BODY_UPDATES.match(line):
+            start, end = _clean_version(match.group("from")), _clean_version(match.group("to"))
+            if start and end:
+                row = (_clean_package(match.group("pkg")), start, end)
+        if row is not None:
+            rows.setdefault(row[0].lower(), row)
+    return list(rows.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +373,11 @@ def resolve_bumps(
             )
         elif existing.from_version is None and start:
             found[key] = existing.model_copy(update={"from_version": start})
+    if not found and not fallbacks and title and is_group_title(title):
+        raise BumpError(
+            "this is a grouped update, but neither the manifest diff nor the PR body lists "
+            "its packages; pass --package, --from and --to for each one"
+        )
     if not found and parsed_title and guessed is None:
         raise BumpError(
             f"found {parsed_title[0]!r} in the title but could not tell whether it is a PyPI "

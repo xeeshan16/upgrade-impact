@@ -261,3 +261,90 @@ def test_second_run_is_answered_from_the_cache(
     assert code == 0
     assert "from cache" not in uncached
     assert "code review:" not in uncached
+
+
+GROUP_PR_URL = "https://github.com/owner/repo/pull/10"
+
+
+def test_grouped_pr_checks_every_package(
+    services: Services, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, err = run(capsys, "check", GROUP_PR_URL, "--provider", "fake", "--format", "json")
+    assert code == 0, err
+    report = json.loads(out)
+    verdicts = {b["bump"]["package"]: b["verdict"] for b in report["bumps"]}
+    # rich has no release notes here (PyPI 404), so it is unknown; httpx has a
+    # possible match, so the PR as a whole is "review".
+    assert verdicts == {"httpx": "review", "rich": "unknown"}
+    assert report["verdict"] == "review"
+    assert [b["bump"]["source"] for b in report["bumps"]] == ["manifest-diff", "pr-body"]
+
+    code, out, _ = run(capsys, "check", GROUP_PR_URL, "--provider", "fake")
+    assert code == 0
+    overview = out.split("\n\n", 1)[0].splitlines()
+    assert overview[0] == f"upgrade-impact: 2 bumps in {GROUP_PR_URL}: review"
+    assert overview[1].split()[:2] == ["review", "httpx"]
+    assert overview[2].split()[:2] == ["unknown", "rich"]
+
+
+def test_only_selects_packages_of_a_group(
+    services: Services, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, err = run(
+        capsys, "check", GROUP_PR_URL, "--provider", "fake", "--only", "Rich", "--format", "json"
+    )
+    assert code == 0, err
+    assert [b["bump"]["package"] for b in json.loads(out)["bumps"]] == ["rich"]
+    code, _, err = run(capsys, "check", GROUP_PR_URL, "--provider", "fake", "--only", "nope")
+    assert code == cli.EXIT_USAGE
+    assert "found: httpx, rich" in err
+
+
+@pytest.mark.parametrize(
+    ("fail_on", "expected"),
+    [("never", 0), ("affected", 0), ("review", cli.EXIT_FAIL_ON), ("unknown", cli.EXIT_FAIL_ON)],
+)
+def test_fail_on_sets_the_exit_code(
+    services: Services, capsys: pytest.CaptureFixture[str], fail_on: str, expected: int
+) -> None:
+    code, _, err = run(
+        capsys,
+        "check",
+        "https://github.com/owner/repo/pull/9",
+        "--provider",
+        "fake",
+        "--fail-on",
+        fail_on,
+    )
+    assert code == expected, err
+    assert ("meets --fail-on" in err) == bool(expected)
+
+
+def test_ci_outputs_json_summary_and_annotations(
+    services: Services, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    summary = tmp_path / "summary.md"
+    summary.write_text("# earlier step\n", encoding="utf-8")
+    code, out, err = run(
+        capsys,
+        "check",
+        "https://github.com/owner/repo/pull/9",
+        "--provider",
+        "fake",
+        "--json-out",
+        str(tmp_path / "out" / "report.json"),
+        "--summary-file",
+        str(summary),
+        "--annotate",
+    )
+    assert code == 0, err
+    report = json.loads((tmp_path / "out" / "report.json").read_text(encoding="utf-8"))
+    assert report["verdict"] == "review"
+    written = summary.read_text(encoding="utf-8")
+    assert written.startswith("# earlier step\n")  # appended, not replaced
+    assert "### `httpx` 0.27.0 → 0.28.1" in written
+    notices = [line for line in out.splitlines() if line.startswith("::notice ")]
+    assert any(
+        n.startswith("::notice file=app/http.py,line=9,title=httpx 0.28.1%3A ") for n in notices
+    )
+    assert not [line for line in out.splitlines() if line.startswith("::warning ")]
