@@ -77,6 +77,28 @@ All notable changes to this project are documented here. The format follows
 - The eval counts which causes held cases at "review" and the note lines
   ruled out, lists injection-flagged lines, and for runs of up to 40 cases
   lists every case and its claims in `report.md`.
+- Grouped PRs: Dependabot's group table and "Updates `pkg` from A to B" lines
+  are read (notes quoted inside `<details>` are skipped), every package gets
+  its own verdict, and the report lists bumps worst first with an overall
+  verdict (`verdict` in the JSON for the report and each bump). `--only`
+  selects packages.
+- CI options for `check`: `--json-out`, `--summary-file`, `--annotate`
+  (GitHub warning/notice annotations, capped at 10 per level) and `--fail-on`
+  (exit code 3).
+- A GitHub Action (`action.yml`) with job summary, annotations, `verdict`,
+  `affected-lines`, `packages` and `report-json` outputs and a `fail-on`
+  input; it runs without a model, and says so, when none is configured. Example
+  workflow in `examples/workflows/`.
+- `upgrade-impact mcp`: an MCP server over stdio with `assess_bump`,
+  `find_usages` and `get_release_notes`, limited to the working directory or
+  `UPGRADE_IMPACT_MCP_ROOTS`; configs for Claude Code, Cursor and VS Code in
+  `examples/mcp/`.
+
+### Fixed
+
+- In a grouped PR, the PR-body fallback for release notes used the whole body
+  for every package, so a package with no notes of its own read another
+  package's notes. Each package now gets only its own block.
 
 ### Changed
 

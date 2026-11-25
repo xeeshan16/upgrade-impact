@@ -320,3 +320,65 @@ Next (day 5): the GitHub Action (job summary, annotations, JSON output),
 grouped PRs with many packages, and the MCP server (`assess_bump`,
 `find_usages`, `get_release_notes`) with configs for Claude Code, Cursor and
 VS Code.
+
+
+## Day 5 — 2026-11-25: where developers work
+
+Built:
+
+- **Grouped PRs.** Dependabot's grouped updates list packages that moved only
+  in a lock file in the PR body, as "Updates `pkg` from A to B" lines or, for
+  bigger groups, a `| Package | From | To |` table. Both are read; notes that
+  Dependabot quotes inside `<details>` are skipped (they can contain their own
+  "Updates ..." lines). Each package is checked on its own, bumps are listed
+  worst first, and the PR's verdict is the worst one. `--only` picks packages.
+- **CI outputs for `check`:** `--json-out`, `--summary-file`, `--annotate`
+  (a warning per affected line, a notice per possible one, capped at GitHub's
+  10 per level with a count of the rest) and `--fail-on` (exit code 3). The
+  JSON now carries the verdict of the report and of each bump.
+- **GitHub Action** (`action.yml`, composite): installs from the action's own
+  checkout, checks the triggering PR (or `pr-url`), writes the job summary,
+  annotates lines, and outputs `verdict`, `affected-lines`, `packages` and
+  `report-json`. With no model configured it says so and runs the no-model
+  check rather than failing on a missing Ollama. Example workflow in
+  `examples/workflows/`.
+- **MCP server** (`upgrade-impact mcp`): `assess_bump` (PR URL, manifest diff,
+  or package and versions), `find_usages` and `get_release_notes` (no model),
+  with structured output, progress per package, local paths limited to the
+  working directory or `UPGRADE_IMPACT_MCP_ROOTS`, one model call at a time,
+  release-note text labelled as untrusted and instruction-like lines flagged.
+  The JSON-RPC layer is the stdio implementation from ci-pinpoint. Configs for
+  Claude Code, Cursor and VS Code in `examples/mcp/`.
+
+Found while building:
+
+- The PR-body fallback for release notes handed a grouped PR's whole body to
+  every package. In the grouped test PR, `rich` (no notes found anywhere) came
+  out "no impact" by reading the httpx notes quoted in the body. Each package
+  now gets only its own block of the body, and `rich` is "unknown", as it
+  should be.
+- Workflows triggered by Dependabot don't get repository secrets, so an Action
+  that needs an API key would fail on exactly the PRs it is for. The example
+  workflow and README say to add the key as a Dependabot secret, and without
+  any key the Action degrades to the no-model check instead of erroring.
+
+Verified:
+
+- Locally: ruff, mypy strict and 332 tests (92% coverage), including the
+  official MCP client SDK driving `upgrade-impact mcp` as a subprocess, and
+  the action's shell script against a manifest diff with the fake provider
+  and with no model.
+- In CI
+  ([run 45619033448](https://github.com/xeeshan16/upgrade-impact/actions/runs/45619033448),
+  `5646d63`): the action itself (`uses: ./`) on the real fastapi-pagination
+  httpx bump returns `verdict=review` with `tests/conftest.py:271` among the
+  matched lines, `fail-on: review` fails the step, and the no-model path runs;
+  the installed wheel's MCP server answers the handshake and lists its three
+  tools.
+- Not yet: a real grouped PR (the dataset has none; the formats are tested
+  from their documented shapes) and the Action with a real model (added to
+  the `real-model` workflow, which runs after CI on main).
+
+Next (day 6): OpenTelemetry traces and metrics, token and cost accounting,
+concurrent checks of grouped PRs, timeouts, a Docker image smoke-tested in
+CI, the threat-model ADR, and a larger real-model eval run on the dev split.

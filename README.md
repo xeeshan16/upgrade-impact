@@ -6,11 +6,13 @@ breaking-change claims with a language model, finds the lines in your repository
 that use what changed, and cites both sides: a release-note line and a code line,
 each verified by code. If nothing is affected, it says so and tells you why.
 
-> **Status: day 4 of 7.** Works end to end for PyPI and npm bumps on Python and
+> **Status: day 5 of 7.** Works end to end for PyPI and npm bumps on Python and
 > JavaScript/TypeScript code, with a model review of borderline matches, a
-> calibrated "no impact" (runtime floor check, a guarded second reading of
-> unclaimed note lines, prompt-injection tripwires) and an eval harness with a
-> dataset of 259 real bump PRs. The GitHub Action and the MCP server are next
+> calibrated "no impact" and an eval harness with a dataset of 259 real bump
+> PRs. New today: grouped PRs checked package by package, a
+> [GitHub Action](#in-ci-the-github-action) and an
+> [MCP server](#for-coding-agents-the-mcp-server) for Claude Code, Cursor and
+> VS Code. Production hardening and the held-out eval are next
 > ([plan](docs/PLAN.md), [progress](docs/PROGRESS.md)).
 
 ## What it does
@@ -67,7 +69,7 @@ matches are all `ASGITransport(app=...)` calls, i.e. false alarms. Before the ru
 qwen2.5:7b called six of the twelve it read "affected"; with it, all twelve stay
 "possible" and none is promoted. The review needs more context than these notes
 give to clear them (the 0.27.0 deprecation notice that names the replacement), which
-is still open (see [Limitations](#limitations-day-4)).
+is still open (see [Limitations](#limitations-day-5)).
 
 Both outputs are from the [`real-model` workflow](.github/workflows/real-model.yml)
 ([run 45027489304](https://github.com/xeeshan16/upgrade-impact/actions/runs/45027489304),
@@ -98,11 +100,81 @@ git diff main -- requirements.txt | upgrade-impact check -
 `--format json` writes the full report. `--no-llm` skips the model and shows
 which release notes were found and where the package is used.
 
+Grouped PRs ("Bump the pip group with 5 updates") are checked package by
+package and listed worst first; `--only httpx` picks packages. For scripts:
+`--json-out`, `--summary-file`, `--annotate` (GitHub annotations) and
+`--fail-on affected|review|unknown`, which exits with code 3 when the verdict
+is that or worse.
+
+## In CI: the GitHub Action
+
+Copy [examples/workflows/upgrade-impact.yml](examples/workflows/upgrade-impact.yml)
+to `.github/workflows/`. On every Dependabot or Renovate PR it writes the
+report to the job summary, puts a warning on each affected line and a notice on
+each possible one, and can fail the check:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: actions/setup-python@v5
+  with:
+    python-version: "3.12"
+- id: impact
+  uses: xeeshan16/upgrade-impact@main
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}  # or OPENAI_API_KEY, Azure, base-url
+  with:
+    fail-on: affected        # never (default), affected, review or unknown
+- run: echo "${{ steps.impact.outputs.verdict }}"
+```
+
+| Input | Default | |
+|---|---|---|
+| `pr-url` | the triggering PR | any GitHub PR URL |
+| `ref` | checkout / PR head | analyse the code at this commit |
+| `only` | all packages | packages of a grouped PR (space or comma separated) |
+| `provider`, `model`, `base-url` | from the step's env | as in [Configuration](#configuration) |
+| `no-llm` | `false` | never call a model |
+| `fail-on` | `never` | `affected`, `review`, `unknown` |
+| `annotate` | `true` | line annotations |
+
+Outputs: `verdict` (`affected`, `review`, `unknown`, `no-impact`, or `error`),
+`affected-lines`, `packages` and `report-json` (path to the full report).
+Workflows that Dependabot triggers do not see repository secrets, so add the
+API key as a Dependabot secret too, or point `base-url` at a model server you
+run. With no model configured the action says so and runs the no-model check
+(breaking-looking note lines and import sites) instead of failing. CI runs the
+action on the real fastapi-pagination PR on every push
+([`action` job](.github/workflows/ci.yml)).
+
+## For coding agents: the MCP server
+
+`upgrade-impact mcp` serves three tools over stdio:
+
+| Tool | Model? | What it returns |
+|---|---|---|
+| `assess_bump` | yes | for a PR URL, a manifest diff, or package + versions: each breaking change with its quoted note line, the code lines it reaches, and a verdict per package |
+| `find_usages` | no | every import, call (with keyword arguments or options), attribute and method use of a package |
+| `get_release_notes` | no | numbered release notes between two versions, breaking-looking and instruction-like lines marked |
+
+Claude Code:
+
+```bash
+claude mcp add upgrade-impact -- uvx --from git+https://github.com/xeeshan16/upgrade-impact upgrade-impact mcp
+```
+
+Cursor and VS Code: copy [examples/mcp/cursor.mcp.json](examples/mcp/cursor.mcp.json)
+to `.cursor/mcp.json` or [examples/mcp/vscode.mcp.json](examples/mcp/vscode.mcp.json)
+to `.vscode/mcp.json` ([Claude Code JSON](examples/mcp/claude-code.mcp.json) too).
+The server reads code only under its working directory (or the directories in
+`UPGRADE_IMPACT_MCP_ROOTS`), runs model calls one at a time, labels release-note
+text as untrusted and flags lines that read like instructions to a model. Then
+ask: *"Is the axios bump in PR #212 safe to merge? Fix whatever it breaks."*
+
 ## How it works
 
 ```mermaid
 flowchart LR
-  PR[PR URL / manifest diff / flags] --> B[Resolve bumps<br/>manifest diff > Renovate table > title]
+  PR[PR URL / manifest diff / flags] --> B[Resolve bumps<br/>manifest diff > PR body tables > title]
   B --> R[Registry lookup<br/>PyPI / npm -> GitHub repo]
   R --> N[Release notes in range<br/>GitHub Releases, CHANGELOG, PR body]
   N --> X[LLM extraction<br/>numbered, fenced notes -> JSON claims]
@@ -118,8 +190,12 @@ flowchart LR
   W --> O[Report: affected / possible / needs review / not used]
 ```
 
-1. **Bump.** Manifest diffs give exact names and versions; Renovate's body table
-   and Dependabot/Renovate titles fill the gaps (lock-file-only PRs).
+1. **Bump.** Manifest diffs give exact names and versions; the PR body
+   (Renovate's table, Dependabot's group table and "Updates `pkg` from A to B"
+   lines, skipping the notes Dependabot quotes) and the title fill the gaps
+   (lock-file-only PRs). A grouped PR gives one bump per package, each with its
+   own slice of the PR body as last-resort notes, and the PR's verdict is the
+   worst of them.
 2. **Release notes.** The package's repository comes from PyPI `project_urls` or
    npm `repository`. Each version in `(from, to]` takes its GitHub release body,
    or its CHANGELOG section when the release is missing or just says "see
@@ -271,7 +347,12 @@ GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
   would catch undocumented changes but costs far more and misses behaviour
   changes; notes are what maintainers write for exactly this purpose.
 
-## Limitations (day 4)
+## Limitations (day 5)
+
+- The Action writes the job summary and annotations; it does not post a PR
+  comment yet. Grouped PRs are checked one package after another.
+- Grouped-PR parsing is tested on Dependabot's and Renovate's body formats,
+  not yet run on a real grouped PR (the mined dataset has none).
 
 - Instance types are inferred within one file and without flow analysis: an
   instance created in one module and used in another is not resolved, and a
