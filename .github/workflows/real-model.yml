@@ -70,6 +70,26 @@ jobs:
         run: |
           uv run python -u scripts/demo_report.py --model "$MODEL" --out "reports/${MODEL//:/-}"
           cat "reports/${MODEL//:/-}/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: the GitHub Action with the real model
+        id: action
+        uses: ./
+        with:
+          pr-url: https://github.com/uriyyo/fastapi-pagination/pull/1373
+          ref: e14c865aebed311824f192cefe16e9e64a9ade19
+          provider: ollama
+          model: ${{ matrix.model }}
+      - name: action outputs
+        env:
+          VERDICT: ${{ steps.action.outputs.verdict }}
+          LINES: ${{ steps.action.outputs.affected-lines }}
+          REPORT: ${{ steps.action.outputs.report-json }}
+        run: |
+          echo "verdict=$VERDICT affected-lines=$LINES"
+          mkdir -p reports/action
+          cp "$REPORT" "reports/action/${MODEL//:/-}.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
