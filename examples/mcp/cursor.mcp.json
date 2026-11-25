@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "upgrade-impact": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/xeeshan16/upgrade-impact", "upgrade-impact", "mcp"],
+      "env": {
+        "GITHUB_TOKEN": "${env:GITHUB_TOKEN}"
+      }
+    }
+  }
+}

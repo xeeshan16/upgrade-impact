@@ -39,6 +39,7 @@ upgrade-impact = "upgrade_impact.cli:main"
 
 [dependency-groups]
 dev = [
+  "mcp>=1.9",
   "mypy>=1.11",
   "pytest>=8",
   "pytest-cov>=5",

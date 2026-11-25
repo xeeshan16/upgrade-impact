@@ -28,6 +28,7 @@ from upgrade_impact.eval.mine import MineOptions, mine_repositories
 from upgrade_impact.eval.report import render_summary
 from upgrade_impact.eval.runner import check_gate, load_gate, run_eval
 from upgrade_impact.eval.systems import ImportGrep, NaivePrompt, SymbolGrep, System, UpgradeImpact
+from upgrade_impact.mcp_server import Services, roots_from, serve_stdio
 from upgrade_impact.models import Bump, Ecosystem
 from upgrade_impact.pipeline import (
     CheckError,
@@ -37,6 +38,7 @@ from upgrade_impact.pipeline import (
     target_from_diff,
     target_from_pr,
 )
+from upgrade_impact.providers.base import ChatModel
 from upgrade_impact.providers.cache import CachingChat
 from upgrade_impact.providers.factory import build_chat
 from upgrade_impact.render import render_annotations, render_markdown, render_text
@@ -206,6 +208,26 @@ def _parser() -> argparse.ArgumentParser:
         "--no-cache", action="store_true", help="do not read or write the model reply cache"
     )
     evaluate.add_argument("-v", "--verbose", action="store_true", help="log progress to stderr")
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="run as an MCP server over stdio, for coding agents",
+        description=(
+            "Serve assess_bump, find_usages and get_release_notes to an MCP client "
+            "(Claude Code, Cursor, VS Code) over stdio. Local code is readable only under "
+            "the working directory, or the directories in UPGRADE_IMPACT_MCP_ROOTS."
+        ),
+    )
+    mcp.add_argument("--provider", choices=PROVIDERS, help="model provider (default: auto)")
+    mcp.add_argument("--model", help="model name")
+    mcp.add_argument("--base-url", help="OpenAI-compatible base URL")
+    mcp.add_argument(
+        "--no-llm", action="store_true", help="never call a model (lookups and no-model checks)"
+    )
+    mcp.add_argument(
+        "--no-cache", action="store_true", help="do not read or write the model reply cache"
+    )
+    mcp.add_argument("-v", "--verbose", action="store_true", help="log to stderr")
     return parser
 
 
@@ -444,6 +466,38 @@ def _eval(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _mcp(args: argparse.Namespace) -> int:
+    settings = load_settings(
+        overrides={"provider": args.provider, "model": args.model, "base_url": args.base_url}
+    )
+    chat: ChatModel | None = None
+    model_error: str | None = None
+    if not args.no_llm:
+        try:
+            chat = build_chat(settings)
+        except ConfigError as exc:
+            # Still useful without a model: lookups and the no-model check need none.
+            model_error = str(exc)
+            print(f"upgrade-impact: no model ({exc}); serving without one", file=sys.stderr)
+    if chat is not None and settings.llm_cache == "on" and not args.no_cache:
+        chat = CachingChat(chat, default_cache_dir(settings, os.environ) / "llm")
+    token = token_from_env(os.environ)
+    services = Services(
+        settings=settings,
+        chat=chat,
+        github=lambda: GitHubClient(
+            api_url=settings.github_api_url, raw_url=settings.github_raw_url, token=token
+        ),
+        registry=lambda: RegistryClient(
+            pypi_url=settings.pypi_url, npm_url=settings.npm_registry_url
+        ),
+        roots=roots_from(os.environ),
+        model_error=model_error,
+    )
+    serve_stdio(services)
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(
@@ -451,7 +505,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    commands = {"check": _check, "mine": _mine, "eval": _eval}
+    commands = {"check": _check, "mine": _mine, "eval": _eval, "mcp": _mcp}
     try:
         return commands[args.command](args)
     except (ConfigError, CheckError, BumpError) as exc:

@@ -171,6 +171,20 @@ jobs:
           uv venv /tmp/clean
           uv pip install --python /tmp/clean/bin/python dist/*.whl
           /tmp/clean/bin/upgrade-impact --version
+      - name: installed MCP server answers the handshake and lists its tools
+        run: |
+          mkdir -p reports
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | /tmp/clean/bin/upgrade-impact mcp --no-llm > reports/mcp-smoke.jsonl
+          cat reports/mcp-smoke.jsonl
+          python3 - <<'PY'
+          import json
+          replies = [json.loads(line) for line in open("reports/mcp-smoke.jsonl")]
+          tools = {t["name"] for t in replies[1]["result"]["tools"]}
+          assert tools == {"assess_bump", "find_usages", "get_release_notes"}, tools
+          PY
       - name: installed eval runs on two dataset cases (no model)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

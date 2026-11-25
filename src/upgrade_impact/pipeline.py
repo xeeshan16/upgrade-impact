@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -358,7 +358,10 @@ def run_check(
     import_names: list[str] | None = None,
     env: Mapping[str, str] | None = None,
     review: bool = True,
+    on_bump: Callable[[int, int, Bump], None] | None = None,
 ) -> Report:
+    """Check every bump of ``target``. ``on_bump(i, total, bump)`` is called before
+    each one (progress for long grouped checks)."""
     env = os.environ if env is None else env
     if not target.bumps:
         raise CheckError(
@@ -368,8 +371,10 @@ def run_check(
     report = Report(
         source=target.source, repository_root=str(code_root), warnings=[*target.warnings, *notes]
     )
-    for bump in target.bumps:
+    for i, bump in enumerate(target.bumps):
         log.info("checking bump", extra={"bump": bump.label})
+        if on_bump is not None:
+            on_bump(i, len(target.bumps), bump)
         report.bumps.append(
             check_bump(
                 bump,
