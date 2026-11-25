@@ -1,0 +1,38 @@
+# Copy to .github/workflows/upgrade-impact.yml in your repository.
+#
+# Runs on Dependabot and Renovate PRs, writes the verdict and the cited breaking
+# changes to the job summary, and annotates the affected lines.
+#
+# Workflows triggered by Dependabot do not see your repository's Actions
+# secrets: add the API key as a *Dependabot* secret too (Settings -> Secrets and
+# variables -> Dependabot), or point base-url at a model server you run.
+name: upgrade-impact
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  impact:
+    if: >
+      github.event.pull_request.user.login == 'dependabot[bot]' ||
+      github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: impact
+        uses: xeeshan16/upgrade-impact@main
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # or OPENAI_API_KEY, or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY
+        with:
+          # Fail the check when a breaking change reaches your code.
+          fail-on: affected
+      - if: always()
+        run: echo "verdict=${{ steps.impact.outputs.verdict }}, affected lines=${{ steps.impact.outputs.affected-lines }}"

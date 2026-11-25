@@ -1,0 +1,113 @@
+name: Upgrade Impact
+description: >-
+  For a Dependabot or Renovate PR, find the breaking changes in the release notes, the
+  lines of your code they reach, and cite both; writes the job summary, annotations
+  and a JSON report.
+author: Zeeshan Imdad
+branding:
+  icon: package
+  color: orange
+
+inputs:
+  pr-url:
+    description: >-
+      Pull request to check. Defaults to the PR that triggered the workflow
+      (pull_request or pull_request_target events).
+    required: false
+    default: ""
+  ref:
+    description: >-
+      Analyse the code at this commit instead of the checkout or the PR head (for
+      example the bump commit, before follow-up fixes).
+    required: false
+    default: ""
+  only:
+    description: Space- or comma-separated packages to check from a grouped PR (default all).
+    required: false
+    default: ""
+  github-token:
+    description: "Token for the GitHub API (PR, release notes). Needs `contents: read`."
+    required: false
+    default: ${{ github.token }}
+  provider:
+    description: >-
+      Model provider: anthropic, openai, azure, openai-compatible, ollama or fake. Empty
+      picks one from the step's environment (ANTHROPIC_API_KEY, AZURE_OPENAI_ENDPOINT,
+      OPENAI_API_KEY, UPGRADE_IMPACT_BASE_URL or the base-url input, OLLAMA_HOST); with
+      none set, the check runs without a model and lists the breaking-looking note lines
+      and the import sites.
+    required: false
+    default: ""
+  model:
+    description: Model name (or Azure deployment). Empty uses the provider's default.
+    required: false
+    default: ""
+  base-url:
+    description: Base URL of an OpenAI-compatible server (vLLM, LM Studio, a gateway).
+    required: false
+    default: ""
+  no-llm:
+    description: Never call a model.
+    required: false
+    default: "false"
+  fail-on:
+    description: >-
+      Fail the step when the verdict is this or worse: affected, review, unknown, or never.
+    required: false
+    default: never
+  annotate:
+    description: Add a warning on each affected code line and a notice on each possible one.
+    required: false
+    default: "true"
+  python:
+    description: Python interpreter to install upgrade-impact with (3.11 or newer).
+    required: false
+    default: python3
+
+outputs:
+  verdict:
+    description: "affected, review, unknown, no-impact, or error when the check could not run."
+    value: ${{ steps.check.outputs.verdict }}
+  report-json:
+    description: Path to the JSON report.
+    value: ${{ steps.check.outputs.report-json }}
+  affected-lines:
+    description: Number of distinct code lines reached by an affected breaking change.
+    value: ${{ steps.check.outputs.affected-lines }}
+  packages:
+    description: Number of package bumps checked.
+    value: ${{ steps.check.outputs.packages }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install upgrade-impact
+      shell: bash
+      env:
+        PYTHON: ${{ inputs.python }}
+      run: |
+        set -euo pipefail
+        "$PYTHON" -c 'import sys; assert sys.version_info >= (3, 11), "upgrade-impact needs Python 3.11+ (set the python input or use actions/setup-python)"'
+        venv="$RUNNER_TEMP/upgrade-impact-venv"
+        "$PYTHON" -m venv "$venv"
+        "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH"
+        echo "UPGRADE_IMPACT_BIN=$venv/bin/upgrade-impact" >> "$GITHUB_ENV"
+        echo "UPGRADE_IMPACT_PY=$venv/bin/python" >> "$GITHUB_ENV"
+
+    - name: Check the bump
+      id: check
+      shell: bash
+      env:
+        INPUT_PR_URL: ${{ inputs.pr-url }}
+        DEFAULT_PR_URL: ${{ github.event.pull_request.html_url }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_ONLY: ${{ inputs.only }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_BASE_URL: ${{ inputs.base-url }}
+        INPUT_NO_LLM: ${{ inputs.no-llm }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_ANNOTATE: ${{ inputs.annotate }}
+        UPGRADE_IMPACT_CACHE_DIR: ${{ runner.temp }}/upgrade-impact-cache
+      run: bash "$GITHUB_ACTION_PATH/scripts/action-check.sh"

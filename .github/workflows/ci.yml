@@ -88,6 +88,73 @@ jobs:
           name: eval-dev
           path: reports/
 
+  action:
+    name: the GitHub Action on a real Dependabot PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PR: https://github.com/uriyyo/fastapi-pagination/pull/1373
+      # The Dependabot commit, before the maintainer fixed the removed app= argument.
+      BUMP_SHA: e14c865aebed311824f192cefe16e9e64a9ade19
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: run the action (fake provider)
+        id: impact
+        uses: ./
+        with:
+          pr-url: ${{ env.PR }}
+          ref: ${{ env.BUMP_SHA }}
+          provider: fake
+      - name: check its outputs
+        env:
+          VERDICT: ${{ steps.impact.outputs.verdict }}
+          REPORT: ${{ steps.impact.outputs.report-json }}
+          PACKAGES: ${{ steps.impact.outputs.packages }}
+        run: |
+          echo "verdict=$VERDICT packages=$PACKAGES report=$REPORT"
+          case "$VERDICT" in affected|review) ;; *) exit 1 ;; esac
+          test "$PACKAGES" = 1
+          python3 - "$REPORT" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          assert report["verdict"] in ("affected", "review"), report["verdict"]
+          hits = {
+              (m["usage"]["path"], m["usage"]["line"])
+              for b in report["bumps"] for r in b["results"]
+              if r["status"] in ("affected", "possible") for m in r["matches"]
+          }
+          assert ("tests/conftest.py", 271) in hits, sorted(hits)
+          print("ok")
+          PY
+      - name: fail-on review fails the step
+        id: gate
+        continue-on-error: true
+        uses: ./
+        with:
+          pr-url: ${{ env.PR }}
+          ref: ${{ env.BUMP_SHA }}
+          provider: fake
+          fail-on: review
+          annotate: "false"
+      - name: no model configured runs without one
+        id: nollm
+        uses: ./
+        with:
+          pr-url: ${{ env.PR }}
+          ref: ${{ env.BUMP_SHA }}
+          annotate: "false"
+      - name: check the gate and the no-model run
+        env:
+          GATE: ${{ steps.gate.outcome }}
+          NOLLM: ${{ steps.nollm.outputs.verdict }}
+        run: |
+          echo "gate=$GATE no-model verdict=$NOLLM"
+          test "$GATE" = failure
+          case "$NOLLM" in affected|review|no-impact|unknown) ;; *) exit 1 ;; esac
+
   package:
     name: build, install, smoke test
     runs-on: ubuntu-latest
