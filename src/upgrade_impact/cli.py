@@ -136,6 +136,14 @@ def _add_check(sub: Any) -> None:
         help=f"exit {EXIT_FAIL_ON} when the verdict is this or worse "
         "(affected < review < unknown; default: never)",
     )
+    check.add_argument(
+        "--jobs", type=int, help="packages of a grouped PR checked at once (default 4)"
+    )
+    check.add_argument(
+        "--max-seconds",
+        type=float,
+        help="time budget for the check; model stages not started by then are skipped",
+    )
     check.add_argument("-v", "--verbose", action="store_true", help="log progress to stderr")
 
 
@@ -280,7 +288,13 @@ def _only(target: Target, wanted: list[str] | None) -> Target:
 
 def _check(args: argparse.Namespace) -> int:
     settings = load_settings(
-        overrides={"provider": args.provider, "model": args.model, "base_url": args.base_url}
+        overrides={
+            "provider": args.provider,
+            "model": args.model,
+            "base_url": args.base_url,
+            "jobs": args.jobs,
+            "max_seconds": args.max_seconds,
+        }
     )
     github = GitHubClient(
         api_url=settings.github_api_url,

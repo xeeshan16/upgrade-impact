@@ -55,6 +55,12 @@ inputs:
       Fail the step when the verdict is this or worse: affected, review, unknown, or never.
     required: false
     default: never
+  max-seconds:
+    description: >-
+      Time budget for the whole check in seconds (empty = none). Model stages not
+      started when it runs out are skipped and those packages report "review".
+    required: false
+    default: ""
   annotate:
     description: Add a warning on each affected code line and a notice on each possible one.
     required: false
@@ -109,5 +115,6 @@ runs:
         INPUT_NO_LLM: ${{ inputs.no-llm }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_ANNOTATE: ${{ inputs.annotate }}
+        UPGRADE_IMPACT_MAX_SECONDS: ${{ inputs.max-seconds }}
         UPGRADE_IMPACT_CACHE_DIR: ${{ runner.temp }}/upgrade-impact-cache
       run: bash "$GITHUB_ACTION_PATH/scripts/action-check.sh"

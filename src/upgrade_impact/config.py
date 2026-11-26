@@ -5,7 +5,7 @@ Config file: ``.upgrade-impact.toml`` in the working directory, or the path in
 ``UPGRADE_IMPACT_`` prefix, lower-cased (``provider``, ``model``, ``base_url``,
 ``timeout_s``, ``max_retries``, ``max_output_tokens``, ``repair_attempts``,
 ``notes_budget_tokens``, ``max_candidates``, ``max_review_calls``, ``recheck``, ``llm_cache``,
-``cache_dir``).
+``cache_dir``, ``jobs``, ``model_concurrency``, ``max_seconds``).
 """
 
 from __future__ import annotations
@@ -32,6 +32,17 @@ class ConfigError(ValueError):
     pass
 
 
+# Inclusive bounds for the integer settings.
+_RANGES = {
+    "max_retries": (0, 10),
+    "repair_attempts": (0, 3),
+    "max_candidates": (0, 200),
+    "max_review_calls": (0, 500),
+    "jobs": (1, 32),
+    "model_concurrency": (1, 32),
+}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     provider: str = "auto"
@@ -54,6 +65,15 @@ class Settings:
     # "on" caches model replies on disk (temperature 0 makes them reproducible).
     llm_cache: str = "on"
     cache_dir: str | None = None
+    # Packages of a grouped PR checked at once (fetching notes and indexing code).
+    jobs: int = 4
+    # Model calls in flight at once across those packages. Ollama serves one
+    # request at a time by default (OLLAMA_NUM_PARALLEL), so 1 avoids queueing
+    # timeouts there; hosted APIs take more.
+    model_concurrency: int = 1
+    # Wall-clock budget for one check, in seconds (0 = none). When it runs out,
+    # model stages not yet started are skipped and their bumps say "review".
+    max_seconds: float = 0.0
     github_api_url: str = "https://api.github.com"
     github_raw_url: str = "https://raw.githubusercontent.com"
     pypi_url: str = "https://pypi.org"
@@ -66,20 +86,18 @@ class Settings:
             )
         if self.timeout_s <= 0:
             raise ConfigError("timeout_s must be positive")
-        if not 0 <= self.max_retries <= 10:
-            raise ConfigError("max_retries must be between 0 and 10")
-        if not 0 <= self.repair_attempts <= 3:
-            raise ConfigError("repair_attempts must be between 0 and 3")
+        for name, (low, high) in _RANGES.items():
+            value = getattr(self, name)
+            if not low <= value <= high:
+                raise ConfigError(f"{name} must be between {low} and {high}")
         if self.notes_budget_tokens < 500:
             raise ConfigError("notes_budget_tokens must be at least 500")
         if self.max_output_tokens < 256:
             raise ConfigError("max_output_tokens must be at least 256")
-        if not 0 <= self.max_candidates <= 200:
-            raise ConfigError("max_candidates must be between 0 and 200")
-        if not 0 <= self.max_review_calls <= 500:
-            raise ConfigError("max_review_calls must be between 0 and 500")
         if self.recheck not in ("on", "off"):
             raise ConfigError("recheck must be 'on' or 'off'")
+        if self.max_seconds < 0:
+            raise ConfigError("max_seconds must be 0 (no budget) or positive")
         if self.llm_cache not in ("on", "off"):
             raise ConfigError("llm_cache must be 'on' or 'off'")
         return self
@@ -99,6 +117,9 @@ _ENV_KEYS = {
     "recheck": "UPGRADE_IMPACT_RECHECK",
     "llm_cache": "UPGRADE_IMPACT_LLM_CACHE",
     "cache_dir": "UPGRADE_IMPACT_CACHE_DIR",
+    "jobs": "UPGRADE_IMPACT_JOBS",
+    "model_concurrency": "UPGRADE_IMPACT_MODEL_CONCURRENCY",
+    "max_seconds": "UPGRADE_IMPACT_MAX_SECONDS",
     "github_api_url": "GITHUB_API_URL",
 }
 

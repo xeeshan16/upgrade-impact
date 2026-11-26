@@ -338,6 +338,11 @@ class BumpReport(BaseModel):
     recheck: ModelRun | None = Field(
         default=None, description="Model calls that re-read unclaimed note lines."
     )
+    skipped: list[str] = Field(
+        default_factory=list,
+        description="Model stages not run because the check's time budget ran out "
+        "(extract, recheck, review). A bump with skipped stages is never 'no impact'.",
+    )
     elapsed_s: float = Field(default=0.0, description="Wall-clock time spent on this bump.")
     warnings: list[str] = Field(default_factory=list)
 
@@ -361,7 +366,8 @@ class BumpReport(BaseModel):
         """What keeps the answer at "review" rather than "no impact", counted by cause:
         ``possible`` (claims with unconfirmed matches), ``no_api`` (claims naming no API,
         of which ``runtime`` are about the runtime), ``unclaimed`` (breaking-looking note
-        lines no claim covers) and ``suspicious`` (note lines that read like injection)."""
+        lines no claim covers), ``suspicious`` (note lines that read like injection) and
+        ``budget`` (model stages skipped when the time budget ran out)."""
         needs = [r for r in self.results if r.status == ClaimStatus.NEEDS_REVIEW]
         causes = {
             "possible": self.count(ClaimStatus.POSSIBLE),
@@ -369,6 +375,7 @@ class BumpReport(BaseModel):
             "runtime": sum(1 for r in needs if r.runtime is not None),
             "unclaimed": len(self.uncovered),
             "suspicious": len(self.suspicious) if self.notes_lines else 0,
+            "budget": len(self.skipped) if self.notes_lines else 0,
         }
         return {k: v for k, v in causes.items() if v}
 
@@ -388,6 +395,8 @@ class BumpReport(BaseModel):
             reasons.append(f"{n} unclaimed breaking-looking note line(s)")
         if n := causes.get("suspicious"):
             reasons.append(f"{n} note line(s) read like instructions to a model")
+        if causes.get("budget"):
+            reasons.append(f"time budget ran out before: {', '.join(self.skipped)}")
         return reasons
 
 

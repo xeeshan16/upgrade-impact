@@ -325,6 +325,8 @@ day 7.
 | review cap | `UPGRADE_IMPACT_MAX_CANDIDATES`, `UPGRADE_IMPACT_MAX_REVIEW_CALLS` | `12` code candidates per claim, `8` uncached review calls per bump (`--no-review` turns review off) |
 | second reading | `UPGRADE_IMPACT_RECHECK` | `on`: re-read unclaimed breaking-looking note lines (`off` leaves them for you) |
 | reply cache | `UPGRADE_IMPACT_LLM_CACHE` | `on` (`off` or `--no-cache` to bypass) |
+| parallel packages | `UPGRADE_IMPACT_JOBS`, `UPGRADE_IMPACT_MODEL_CONCURRENCY` | `4` packages of a grouped PR at once (`--jobs`), `1` model call in flight (Ollama serves one at a time; raise it for hosted APIs) |
+| time budget | `UPGRADE_IMPACT_MAX_SECONDS` | none (`--max-seconds`, action input `max-seconds`): model stages not started when it runs out are skipped and the package says "review" |
 | prices | `UPGRADE_IMPACT_PRICE_IN`, `UPGRADE_IMPACT_PRICE_OUT` | built-in list prices for common hosted models, `$0` for Ollama; USD per million input / output tokens overrides them |
 | cache dir | `UPGRADE_IMPACT_CACHE_DIR` | `~/.cache/upgrade-impact` (downloaded PR code, model replies, eval clones and notes) |
 | git host for `mine`/`eval` | `UPGRADE_IMPACT_GIT_URL` | `https://github.com` |

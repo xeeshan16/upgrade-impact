@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import logging
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +34,7 @@ from upgrade_impact.models import (
 from upgrade_impact.notes import collect_notes
 from upgrade_impact.pricing import account
 from upgrade_impact.providers.base import ChatModel
+from upgrade_impact.providers.bounded import BoundedChat
 from upgrade_impact.recheck import code_names, recheck_lines
 from upgrade_impact.runtime import (
     MANIFEST_FILES,
@@ -57,6 +61,27 @@ DOWNLOAD_SUFFIXES = (*SOURCE_SUFFIXES, *MANIFEST_FILES)
 
 class CheckError(RuntimeError):
     """The check could not run (bad input, nothing to analyse)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Deadline:
+    """A wall-clock budget for one check, checked between model stages.
+
+    A stage already running finishes (each model call is bounded by the
+    provider timeout); stages not yet started when the budget is spent are
+    skipped, and the bump is reported as "review", never "no impact".
+    """
+
+    budget_s: float = 0.0
+    at: float | None = None
+    clock: Callable[[], float] = time.monotonic
+
+    @classmethod
+    def after(cls, seconds: float, clock: Callable[[], float] = time.monotonic) -> Deadline:
+        return cls(seconds, clock() + seconds if seconds > 0 else None, clock)
+
+    def expired(self) -> bool:
+        return self.at is not None and self.clock() >= self.at
 
 
 @dataclass(slots=True)
@@ -193,10 +218,13 @@ def check_bump(
     import_names: list[str] | None = None,
     review: bool = True,
     notes: ReleaseNotes | None = None,
+    deadline: Deadline | None = None,
 ) -> BumpReport:
     """Check one bump. ``notes`` skips the release-note lookup (the eval passes
-    a cached copy so every system reads the same notes)."""
+    a cached copy so every system reads the same notes). ``deadline`` skips the
+    model stages that have not started when it expires."""
     report = BumpReport(bump=bump)
+    deadline = deadline or Deadline()
     if notes is None:
         notes = fetch_notes(bump, registry, github, pr_body=target.pr_body)
     report.warnings.extend(notes.warnings)
@@ -226,6 +254,8 @@ def check_bump(
             + ", ".join(f"N{line.n}" for line in report.suspicious[:5])
         )
 
+    if chat is not None and notes.lines and _skip(report, deadline, "extract"):
+        chat = None
     if chat is None or not notes.lines:
         # Without a model, the lines that read like breaking changes are the summary.
         _settle_uncovered(report, notes, uncovered_lines(notes, []), floor, bump)
@@ -245,7 +275,7 @@ def check_bump(
     report.warnings.extend(extraction.warnings)
     claims = extraction.claims
 
-    if settings.recheck == "on":
+    if settings.recheck == "on" and not _skip(report, deadline, "recheck"):
         claims = _second_reading(
             report,
             chat,
@@ -260,7 +290,7 @@ def check_bump(
 
     report.results = match_claims(claims, usages, names)
     apply_runtime(report.results, notes, floor, bump.ecosystem)
-    if review and settings.max_candidates > 0:
+    if review and settings.max_candidates > 0 and not _skip(report, deadline, "review"):
         outcome = adjudicate(
             chat,
             bump,
@@ -284,6 +314,18 @@ def check_bump(
         bump,
     )
     return report
+
+
+def _skip(report: BumpReport, deadline: Deadline, stage: str) -> bool:
+    """True (and recorded on the report) when the budget is spent before ``stage``."""
+    if not deadline.expired():
+        return False
+    report.skipped.append(stage)
+    report.warnings.append(
+        f"time budget of {deadline.budget_s:g} s ran out before the {stage} stage; "
+        "it was skipped, so this bump needs a human look"
+    )
+    return True
 
 
 def _second_reading(
@@ -362,8 +404,13 @@ def run_check(
     review: bool = True,
     on_bump: Callable[[int, int, Bump], None] | None = None,
 ) -> Report:
-    """Check every bump of ``target``. ``on_bump(i, total, bump)`` is called before
-    each one (progress for long grouped checks)."""
+    """Check every bump of ``target``, up to ``settings.jobs`` at once.
+
+    ``on_bump(i, total, bump)`` is called as each bump starts, with ``i``
+    counting up from 0 in start order (progress for long grouped checks). With
+    more than one job, model calls are capped at ``settings.model_concurrency``
+    in flight. Reports come back in the target's order whatever finishes first.
+    """
     env = os.environ if env is None else env
     started = time.monotonic()
     if not target.bumps:
@@ -374,10 +421,20 @@ def run_check(
     report = Report(
         source=target.source, repository_root=str(code_root), warnings=[*target.warnings, *notes]
     )
-    for i, bump in enumerate(target.bumps):
-        log.info("checking bump", extra={"bump": bump.label})
+    deadline = Deadline.after(settings.max_seconds)
+    jobs = min(settings.jobs, len(target.bumps))
+    if chat is not None and jobs > 1:
+        chat = BoundedChat(chat, settings.model_concurrency)
+    started_count = 0
+    progress_lock = threading.Lock()
+
+    def one(bump: Bump) -> BumpReport:
+        nonlocal started_count
         if on_bump is not None:
-            on_bump(i, len(target.bumps), bump)
+            with progress_lock:
+                on_bump(started_count, len(target.bumps), bump)
+                started_count += 1
+        log.info("checking bump", extra={"bump": bump.label})
         bump_started = time.monotonic()
         bump_report = check_bump(
             bump,
@@ -389,9 +446,25 @@ def run_check(
             settings=settings,
             import_names=import_names,
             review=review,
+            deadline=deadline,
         )
         bump_report.elapsed_s = round(time.monotonic() - bump_started, 3)
-        report.bumps.append(bump_report)
+        return bump_report
+
+    if jobs <= 1:
+        report.bumps = [one(bump) for bump in target.bumps]
+    else:
+        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="upgrade-impact") as pool:
+            # Each worker runs in a copy of this context, so spans and other
+            # context variables set by the caller follow the bump onto its thread.
+            futures = [
+                pool.submit(contextvars.copy_context().run, one, bump) for bump in target.bumps
+            ]
+            try:
+                report.bumps = [future.result() for future in futures]
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
     report.accounting = account(report, env)
     report.elapsed_s = round(time.monotonic() - started, 3)
     return report

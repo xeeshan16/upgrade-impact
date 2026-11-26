@@ -295,6 +295,39 @@ def test_grouped_pr_checks_every_package(
     assert overview[2].split()[:2] == ["unknown", "rich"]
 
 
+def test_grouped_pr_in_parallel_matches_one_at_a_time(
+    services: Services, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def verdicts(*extra: str) -> list[tuple[str, str, int]]:
+        code, out, err = run(
+            capsys, "check", GROUP_PR_URL, "--provider", "fake", "--format", "json", *extra
+        )
+        assert code == 0, err
+        return [
+            (b["bump"]["package"], b["verdict"], len(b["results"]))
+            for b in json.loads(out)["bumps"]
+        ]
+
+    serial = verdicts("--jobs", "1", "--no-cache")
+    assert verdicts("--jobs", "4", "--no-cache") == serial
+    assert [p for p, _, _ in serial] == ["httpx", "rich"]
+
+
+def test_a_spent_time_budget_reports_review(
+    services: Services, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, err = run(
+        capsys, "check", GROUP_PR_URL, "--provider", "fake", "--format", "json",
+        "--max-seconds", "0.000001",
+    )  # fmt: skip
+    assert code == 0, err
+    report = json.loads(out)
+    httpx = next(b for b in report["bumps"] if b["bump"]["package"] == "httpx")
+    assert httpx["skipped"] == ["extract"]
+    assert httpx["verdict"] == "review"
+    assert report["accounting"] is None
+
+
 def test_only_selects_packages_of_a_group(
     services: Services, capsys: pytest.CaptureFixture[str]
 ) -> None:

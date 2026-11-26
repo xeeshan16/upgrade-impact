@@ -98,6 +98,14 @@ All notable changes to this project are documented here. The format follows
   Prices come from a small table of published list prices, `$0` for local
   models, and `UPGRADE_IMPACT_PRICE_IN` / `_OUT` override both; an unknown
   hosted model is shown as "cost unknown", never guessed.
+- Grouped PRs are checked in parallel (`--jobs`, `UPGRADE_IMPACT_JOBS`,
+  default 4) with model calls capped by `UPGRADE_IMPACT_MODEL_CONCURRENCY`
+  (default 1, which suits a local Ollama). Bumps keep their order and the
+  report is the same as a one-at-a-time run.
+- A time budget for a check (`--max-seconds`, `UPGRADE_IMPACT_MAX_SECONDS`,
+  action input `max-seconds`): model stages that have not started when it runs
+  out are skipped, listed in the bump's `skipped`, and the bump is "review",
+  never "no impact".
 
 ### Fixed
 
