@@ -382,3 +382,69 @@ Verified:
 Next (day 6): OpenTelemetry traces and metrics, token and cost accounting,
 concurrent checks of grouped PRs, timeouts, a Docker image smoke-tested in
 CI, the threat-model ADR, and a larger real-model eval run on the dev split.
+
+
+## Day 6 — 2026-11-26: production concerns
+
+Built:
+
+- **Cost accounting.** Every report ends with the check's model calls (cached
+  ones counted), tokens, estimated cost and wall time; the JSON has an
+  `accounting` object and per-bump `elapsed_s`. Prices: a small table of
+  published list prices for common hosted models, `$0` for Ollama and the
+  fake, `UPGRADE_IMPACT_PRICE_IN` / `_OUT` override both, and an unknown hosted
+  model says "cost unknown" instead of a guess.
+- **Parallel grouped PRs and a time budget.** Packages run on a pool
+  (`--jobs`, default 4) with model calls capped by
+  `UPGRADE_IMPACT_MODEL_CONCURRENCY` (default 1, since Ollama serves one
+  request at a time and queued requests would hit the timeout). Bumps keep
+  their order; progress numbers stay monotonic for MCP clients. `--max-seconds`
+  (action input `max-seconds`) bounds a check: model stages not started when
+  it runs out are skipped, listed in `skipped`, and the bump is "review",
+  never "no impact". Per-call timeouts and retries with backoff already
+  existed (day 1).
+- **OpenTelemetry** (`upgrade-impact[otel]`, `UPGRADE_IMPACT_OTEL=1`): a
+  `check` span, a `bump` span per package (context is copied onto the worker
+  threads, so a parallel check is still one trace), and `notes`, `index`,
+  `extract`, `recheck`, `review` spans with counts; counters for model calls,
+  tokens, cost and verdicts, and a stage-duration histogram. OTLP/HTTP with
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, stderr otherwise. Spans carry metadata only.
+- **Docker image**: non-root, with the OpenTelemetry extra.
+- **Secret redaction** in the code windows the review step shows the model
+  (token formats, authorization headers, URL credentials, string literals
+  assigned to secret-sounding names); the report counts redactions. Found
+  while writing the threat model: the calls the review reads are HTTP and SDK
+  client calls, which is where hard-coded bearer tokens sit, and with a
+  hosted provider those windows leave the machine. The first version of the
+  name pattern backtracked catastrophically on long identifier runs (a test
+  hung); it is now bounded, with a test on a 4,000-character line.
+- **ADR 0005, threat model**: inputs by who controls them, nine threats
+  (injection aimed at the verdict or at the agent, code execution, archive
+  extraction, leaking code and credentials, MCP paths, cost, cache poisoning),
+  what the code does and what is left.
+- The `real-model` workflow takes the eval split as an input, so day 7 can
+  score the held-out split with Ollama.
+
+Verified:
+
+- Locally: ruff, mypy strict, 377 tests (92% coverage), including spans and
+  metrics read back from the OpenTelemetry SDK's in-memory exporters (bump
+  spans parented to the check span across threads), the model-call cap under
+  8 concurrent callers, and a review prompt that contains the call but not
+  the hard-coded key. A CLI run with `UPGRADE_IMPACT_OTEL=1` on the fixture
+  repo printed all seven span types and four metrics to stderr. The Docker
+  image could not be built locally (Docker Hub is not reachable from the
+  sandbox).
+- In CI ([run 45825534275](https://github.com/xeeshan16/upgrade-impact/actions/runs/45825534275),
+  `3676623`): the image builds, prints its version, answers the MCP handshake
+  over `docker run -i`, and checks a mounted repository with real httpx notes
+  and the fake provider, with all span types on stderr.
+- Started: the real-model eval on 6 impact + 6 clean dev cases with
+  qwen2.5:7b ([run 45826198009](https://github.com/xeeshan16/upgrade-impact/actions/runs/45826198009));
+  CPU inference takes hours, so its numbers go into tomorrow's entry.
+
+Next (day 7): run the held-out split (deterministic baselines on all of it,
+upgrade-impact and the naive prompt with qwen2.5:7b on a fixed sample),
+report the measured table with dataset, provider, model and settings, README
+polish with the architecture diagram, ROADMAP, a clean-install check and the
+`v0.1.0` tag.

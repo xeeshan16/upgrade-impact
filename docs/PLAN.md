@@ -78,6 +78,12 @@ OpenTelemetry traces and metrics, token and cost accounting, concurrent
 package analysis, timeouts and retries, a Docker image smoke-tested in CI, a
 threat-model ADR, and real-model eval runs (Ollama in CI).
 
+*Adjusted on day 6 (see PROGRESS):* secret redaction of the code shown to the
+model was added (the threat model found the gap). Following migration-guide
+links and deprecation-history context did not make it: the real-model eval
+started today is the evidence for whether they would fix misses, and they go
+to the roadmap if not.
+
 ## Day 7: finish
 Measured results on the held-out split against the baselines (dataset,
 provider, model and settings stated), README polish, a Mermaid architecture

@@ -388,10 +388,18 @@ on a span.
   would catch undocumented changes but costs far more and misses behaviour
   changes; notes are what maintainers write for exactly this purpose.
 
-## Limitations (day 5)
+## Limitations (day 6)
 
 - The Action writes the job summary and annotations; it does not post a PR
-  comment yet. Grouped PRs are checked one package after another.
+  comment yet.
+- The time budget is checked between stages: a stage already running
+  finishes (each model call is bounded by `UPGRADE_IMPACT_TIMEOUT_S`).
+- Secret redaction is pattern-based (known token formats and secret-named
+  literals); an unusual format in a reviewed code window is sent as is. With
+  a hosted model, code windows around matched lines leave the machine by
+  design; use Ollama or `--no-review` if that is not allowed.
+- Cost estimates use a hand-maintained table of list prices; set your own with
+  `UPGRADE_IMPACT_PRICE_IN` / `_OUT`.
 - Grouped-PR parsing is tested on Dependabot's and Renovate's body formats,
   not yet run on a real grouped PR (the mined dataset has none).
 
