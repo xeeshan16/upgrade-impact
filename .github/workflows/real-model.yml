@@ -11,8 +11,13 @@ on:
         description: Ollama models (JSON list)
         default: '["qwen2.5:3b", "qwen2.5:7b"]'
       eval_per_label:
-        description: Also run the eval on N impact + N no-impact dev cases (0 = skip)
+        description: Also run the eval on N impact + N no-impact cases (0 = skip)
         default: "0"
+      eval_split:
+        description: Dataset split for the eval (dev while developing; test is held out)
+        type: choice
+        options: [dev, test]
+        default: dev
       eval_model:
         description: Ollama model for the eval
         default: qwen2.5:7b
@@ -97,7 +102,7 @@ jobs:
           path: reports/
 
   eval:
-    # Real-model eval on a fixed dev sample. Slow on a CPU runner, so manual only.
+    # Real-model eval on a fixed sample of one split. Slow on a CPU runner, so manual only.
     if: github.event_name == 'workflow_dispatch' && inputs.eval_per_label != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 340
@@ -128,14 +133,16 @@ jobs:
           fi
           for i in $(seq 1 60); do curl -sf http://localhost:11434/api/tags > /dev/null && break; sleep 1; done
       - run: ollama pull "${{ inputs.eval_model }}"
-      - name: eval on the dev sample
+      - name: eval on a fixed sample of the chosen split
+        env:
+          SPLIT: ${{ inputs.eval_split }}
         run: |
-          uv run upgrade-impact eval data/cases.jsonl --split dev \
+          uv run upgrade-impact eval data/cases.jsonl --split "$SPLIT" \
             --per-label "${{ inputs.eval_per_label }}" --model "${{ inputs.eval_model }}" \
             --out reports/eval-real
           cat reports/eval-real/report.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-real
+          name: eval-real-${{ inputs.eval_split }}
           path: reports/
