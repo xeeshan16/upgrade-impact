@@ -252,7 +252,8 @@ flowchart LR
    called data, every claim must quote them, and lines that read like
    instructions to a model (or try to close the fence, or speak the tool's
    JSON) are flagged: a flagged line can't be ruled out and keeps the bump
-   from "no impact".
+   from "no impact". Code shown to a model for review has secrets redacted
+   first. The full threat model is [ADR 0005](docs/adr/0005-threat-model.md).
 
 ## Evaluation
 
