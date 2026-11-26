@@ -29,6 +29,13 @@ dependencies = [
   "tree-sitter-typescript>=0.23",
 ]
 
+[project.optional-dependencies]
+# OpenTelemetry traces and metrics (UPGRADE_IMPACT_OTEL=1); see upgrade_impact.telemetry.
+otel = [
+  "opentelemetry-sdk>=1.27,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+]
+
 [project.urls]
 Homepage = "https://github.com/xeeshan16/upgrade-impact"
 Issues = "https://github.com/xeeshan16/upgrade-impact/issues"
@@ -41,6 +48,9 @@ upgrade-impact = "upgrade_impact.cli:main"
 dev = [
   "mcp>=1.9",
   "mypy>=1.11",
+  # So the telemetry path is type-checked and tested; shipped only via the otel extra.
+  "opentelemetry-sdk>=1.27,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
   "pytest>=8",
   "pytest-cov>=5",
   "ruff>=0.6",
@@ -73,6 +83,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "PLC0415"]
+"src/upgrade_impact/telemetry.py" = ["PLC0415"]  # the optional OpenTelemetry extra is imported lazily
 "tests/test_bump.py" = ["S", "PLR", "PLC0415", "E501"]  # a real Renovate table row
 
 [tool.mypy]

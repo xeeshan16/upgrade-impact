@@ -44,6 +44,7 @@ from upgrade_impact.providers.factory import build_chat
 from upgrade_impact.render import render_annotations, render_markdown, render_text
 from upgrade_impact.sources.github import GitHubClient, GitHubError, parse_pr_url, token_from_env
 from upgrade_impact.sources.registry import RegistryClient
+from upgrade_impact.telemetry import configure as configure_telemetry
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -520,6 +521,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         stream=sys.stderr,
     )
     commands = {"check": _check, "mine": _mine, "eval": _eval, "mcp": _mcp}
+    telemetry = configure_telemetry(os.environ)
     try:
         return commands[args.command](args)
     except (ConfigError, CheckError, BumpError) as exc:
@@ -528,3 +530,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except GitHubError as exc:
         print(f"upgrade-impact: GitHub: {exc}", file=sys.stderr)
         return EXIT_ERROR
+    finally:
+        # Flush spans and metrics before the process exits (a no-op when off).
+        telemetry.shutdown()

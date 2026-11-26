@@ -106,6 +106,11 @@ All notable changes to this project are documented here. The format follows
   action input `max-seconds`): model stages that have not started when it runs
   out are skipped, listed in the bump's `skipped`, and the bump is "review",
   never "no impact".
+- Optional OpenTelemetry traces and metrics (`upgrade-impact[otel]`,
+  `UPGRADE_IMPACT_OTEL=1`): a `check` span with a `bump` span per package and
+  a span per stage, counters for model calls, tokens, cost and verdicts, and
+  a stage-duration histogram; OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is
+  set, stderr otherwise. Spans carry metadata only, never notes or code.
 
 ### Fixed
 

@@ -336,6 +336,32 @@ Provider credentials: `OLLAMA_HOST`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_DEPLOYMENT`;
 GitHub: `GITHUB_TOKEN` or `GH_TOKEN` (sent only to the GitHub API host).
 
+### Cost, time and traces
+
+Every report ends with a total line (and `accounting` in the JSON):
+
+```text
+total: 9 model call(s), 8,743 in / 2,159 out tokens, $0 (local model), 0.6 s
+```
+
+(That line is from the fake test provider on the fixture repo; a hosted model
+shows `est. $0.0123 (list price)`.) For traces and metrics, install the extra
+and turn it on:
+
+```bash
+pipx install "upgrade-impact[otel] @ git+https://github.com/xeeshan16/upgrade-impact"
+UPGRADE_IMPACT_OTEL=1 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+  upgrade-impact check https://github.com/OWNER/REPO/pull/123
+```
+
+A `check` span holds a `bump` span per package (also when packages run in
+parallel), each with `notes`, `index`, `extract`, `recheck` and `review` spans
+tagged with counts, model and verdict. Metrics: `upgrade_impact.model.calls`,
+`upgrade_impact.model.tokens`, `upgrade_impact.model.cost_usd`,
+`upgrade_impact.bumps` (by verdict) and `upgrade_impact.stage.duration`. Without
+an OTLP endpoint they are printed to stderr. Release-note text and code never go
+on a span.
+
 ## Design trade-offs
 
 - **The model reads; code checks.** The model turns prose into cited claims and

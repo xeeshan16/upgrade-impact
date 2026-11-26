@@ -50,6 +50,7 @@ from upgrade_impact.sources.github import (
     parse_github_repo,
 )
 from upgrade_impact.sources.registry import RegistryClient, RegistryError
+from upgrade_impact.telemetry import get_telemetry
 
 log = logging.getLogger(__name__)
 
@@ -225,24 +226,18 @@ def check_bump(
     model stages that have not started when it expires."""
     report = BumpReport(bump=bump)
     deadline = deadline or Deadline()
-    if notes is None:
-        notes = fetch_notes(bump, registry, github, pr_body=target.pr_body)
+    telemetry = get_telemetry()
+    with telemetry.stage("notes", cached=notes is not None) as stage:
+        if notes is None:
+            notes = fetch_notes(bump, registry, github, pr_body=target.pr_body)
+        stage.set("note_lines", len(notes.lines))
+        stage.set("versions", len(notes.versions))
     report.warnings.extend(notes.warnings)
     report.notes_versions = notes.versions
     report.notes_sources = sorted({s.source for s in notes.sections})
     report.notes_lines = len(notes.lines)
 
-    if bump.ecosystem == Ecosystem.PYPI:
-        names = import_names or import_names_for(bump.package)
-        index = index_repository(code_root, names)
-        usages = index.usages
-        report.index = index.stats
-    else:
-        names = import_names or [bump.package]
-        js_index = index_js_repository(code_root, names)
-        usages = js_index.usages
-        report.index = js_index.stats
-
+    names, usages = _index(report, code_root, import_names)
     floor = project_floor(code_root, bump.ecosystem)
     report.suspicious = [
         line for n in suspicious_lines(notes) if (line := notes.line(n)) is not None
@@ -260,14 +255,18 @@ def check_bump(
         # Without a model, the lines that read like breaking changes are the summary.
         _settle_uncovered(report, notes, uncovered_lines(notes, []), floor, bump)
         return report
-    extraction = extract_claims(
-        chat,
-        bump,
-        notes,
-        budget_tokens=settings.notes_budget_tokens,
-        max_output_tokens=settings.max_output_tokens,
-        repair_attempts=settings.repair_attempts,
-    )
+    with telemetry.stage("extract", provider=chat.provider, model=chat.model) as stage:
+        extraction = extract_claims(
+            chat,
+            bump,
+            notes,
+            budget_tokens=settings.notes_budget_tokens,
+            max_output_tokens=settings.max_output_tokens,
+            repair_attempts=settings.repair_attempts,
+        )
+        stage.set("calls", extraction.run.calls)
+        stage.set("claims", len(extraction.claims))
+        stage.set("claims_dropped", extraction.dropped)
     report.model = extraction.run
     report.claims_proposed = extraction.proposed
     report.claims_dropped = extraction.dropped
@@ -276,32 +275,37 @@ def check_bump(
     claims = extraction.claims
 
     if settings.recheck == "on" and not _skip(report, deadline, "recheck"):
-        claims = _second_reading(
-            report,
-            chat,
-            bump=bump,
-            notes=notes,
-            claims=claims,
-            floor=floor,
-            usages=usages,
-            names=names,
-            settings=settings,
-        )
+        with telemetry.stage("recheck") as stage:
+            claims = _second_reading(
+                report,
+                chat,
+                bump=bump,
+                notes=notes,
+                claims=claims,
+                floor=floor,
+                usages=usages,
+                names=names,
+                settings=settings,
+            )
+            stage.set("calls", report.recheck.calls if report.recheck else 0)
+            stage.set("claims", len(claims))
 
     report.results = match_claims(claims, usages, names)
     apply_runtime(report.results, notes, floor, bump.ecosystem)
     if review and settings.max_candidates > 0 and not _skip(report, deadline, "review"):
-        outcome = adjudicate(
-            chat,
-            bump,
-            notes,
-            report.results,
-            usages=usages,
-            files=SourceFiles(code_root),
-            max_candidates=settings.max_candidates,
-            max_output_tokens=settings.max_output_tokens,
-            max_calls=settings.max_review_calls,
-        )
+        with telemetry.stage("review") as stage:
+            outcome = adjudicate(
+                chat,
+                bump,
+                notes,
+                report.results,
+                usages=usages,
+                files=SourceFiles(code_root),
+                max_candidates=settings.max_candidates,
+                max_output_tokens=settings.max_output_tokens,
+                max_calls=settings.max_review_calls,
+            )
+            stage.set("calls", outcome.run.calls)
         if outcome.run.calls:
             report.adjudication = outcome.run
         report.warnings.extend(outcome.warnings)
@@ -314,6 +318,25 @@ def check_bump(
         bump,
     )
     return report
+
+
+def _index(
+    report: BumpReport, code_root: Path, import_names: list[str] | None
+) -> tuple[list[str], list[Usage]]:
+    """The package's import names and this code's usages of it (stats on ``report``)."""
+    bump = report.bump
+    with get_telemetry().stage("index", language=bump.ecosystem.value) as stage:
+        if bump.ecosystem == Ecosystem.PYPI:
+            names = import_names or import_names_for(bump.package)
+            index = index_repository(code_root, names)
+            usages, report.index = index.usages, index.stats
+        else:
+            names = import_names or [bump.package]
+            js_index = index_js_repository(code_root, names)
+            usages, report.index = js_index.usages, js_index.stats
+        stage.set("files_scanned", report.index.files_scanned)
+        stage.set("usages", len(usages))
+    return names, usages
 
 
 def _skip(report: BumpReport, deadline: Deadline, stage: str) -> bool:
@@ -421,6 +444,7 @@ def run_check(
     report = Report(
         source=target.source, repository_root=str(code_root), warnings=[*target.warnings, *notes]
     )
+    telemetry = get_telemetry()
     deadline = Deadline.after(settings.max_seconds)
     jobs = min(settings.jobs, len(target.bumps))
     if chat is not None and jobs > 1:
@@ -436,35 +460,56 @@ def run_check(
                 started_count += 1
         log.info("checking bump", extra={"bump": bump.label})
         bump_started = time.monotonic()
-        bump_report = check_bump(
-            bump,
-            target=target,
-            code_root=code_root,
-            chat=chat,
-            registry=registry,
-            github=github,
-            settings=settings,
-            import_names=import_names,
-            review=review,
-            deadline=deadline,
-        )
+        with telemetry.stage(
+            "bump",
+            package=bump.package,
+            ecosystem=bump.ecosystem.value,
+            from_version=bump.from_version,
+            to_version=bump.to_version,
+        ) as stage:
+            bump_report = check_bump(
+                bump,
+                target=target,
+                code_root=code_root,
+                chat=chat,
+                registry=registry,
+                github=github,
+                settings=settings,
+                import_names=import_names,
+                review=review,
+                deadline=deadline,
+            )
+            stage.set("verdict", bump_report.verdict)
+            stage.set("skipped", ",".join(bump_report.skipped) or None)
         bump_report.elapsed_s = round(time.monotonic() - bump_started, 3)
+        telemetry.record_bump(bump_report)
         return bump_report
 
-    if jobs <= 1:
-        report.bumps = [one(bump) for bump in target.bumps]
-    else:
-        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="upgrade-impact") as pool:
-            # Each worker runs in a copy of this context, so spans and other
-            # context variables set by the caller follow the bump onto its thread.
-            futures = [
-                pool.submit(contextvars.copy_context().run, one, bump) for bump in target.bumps
-            ]
-            try:
-                report.bumps = [future.result() for future in futures]
-            except BaseException:
-                pool.shutdown(wait=False, cancel_futures=True)
-                raise
-    report.accounting = account(report, env)
-    report.elapsed_s = round(time.monotonic() - started, 3)
+    with telemetry.stage("check", bumps=len(target.bumps), jobs=jobs) as stage:
+        report.bumps = _run_all(one, target.bumps, jobs)
+        report.accounting = account(report, env)
+        report.elapsed_s = round(time.monotonic() - started, 3)
+        stage.set("verdict", report.verdict)
+        if report.accounting is not None:
+            stage.set("model", report.accounting.model)
+            stage.set("model_calls", report.accounting.calls)
+            stage.set("input_tokens", report.accounting.input_tokens)
+            stage.set("output_tokens", report.accounting.output_tokens)
+            stage.set("cost_usd", report.accounting.cost_usd)
+    telemetry.record_report(report)
     return report
+
+
+def _run_all(one: Callable[[Bump], BumpReport], bumps: list[Bump], jobs: int) -> list[BumpReport]:
+    """``one`` over every bump, on ``jobs`` threads, results in input order."""
+    if jobs <= 1:
+        return [one(bump) for bump in bumps]
+    with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="upgrade-impact") as pool:
+        # Each worker runs in a copy of the caller's context, so the current span
+        # (and any other context variable) follows the bump onto its thread.
+        futures = [pool.submit(contextvars.copy_context().run, one, bump) for bump in bumps]
+        try:
+            return [future.result() for future in futures]
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
