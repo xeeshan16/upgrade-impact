@@ -101,10 +101,21 @@ git diff main -- requirements.txt | upgrade-impact check -
 which release notes were found and where the package is used.
 
 Grouped PRs ("Bump the pip group with 5 updates") are checked package by
-package and listed worst first; `--only httpx` picks packages. For scripts:
+package, four at a time (`--jobs`), and listed worst first; `--only httpx`
+picks packages. `--max-seconds 600` bounds a check: model stages not started by
+then are skipped and those packages say "review". For scripts:
 `--json-out`, `--summary-file`, `--annotate` (GitHub annotations) and
 `--fail-on affected|review|unknown`, which exits with code 3 when the verdict
 is that or worse.
+
+With Docker instead (the image is built and smoke-tested in CI, not published):
+
+```bash
+docker build -t upgrade-impact https://github.com/xeeshan16/upgrade-impact.git
+docker run --rm -v "$PWD:/work" -e GITHUB_TOKEN \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 --add-host=host.docker.internal:host-gateway \
+  upgrade-impact check --package httpx --from 0.27.2 --to 0.28.1
+```
 
 ## In CI: the GitHub Action
 
