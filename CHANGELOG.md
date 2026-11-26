@@ -111,6 +111,10 @@ All notable changes to this project are documented here. The format follows
   a span per stage, counters for model calls, tokens, cost and verdicts, and
   a stage-duration histogram; OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is
   set, stderr otherwise. Spans carry metadata only, never notes or code.
+- Secrets in the code read for review (API keys, tokens, authorization
+  headers, credentials in URLs, string literals assigned to secret-sounding
+  names) are redacted before any model sees them, and the report says how
+  many were redacted. Non-literal values and placeholders are left alone.
 - A Docker image (`Dockerfile`, non-root, with the OpenTelemetry extra),
   built in CI and smoke-tested there: `--version`, the MCP handshake over
   stdio, and a check of a mounted repository with traces on stderr.

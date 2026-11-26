@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,7 @@ from upgrade_impact.models import (
     Verdict,
 )
 from upgrade_impact.providers.base import ChatModel, Message, ProviderError
+from upgrade_impact.redact import redact_line
 
 log = logging.getLogger(__name__)
 
@@ -151,16 +153,25 @@ class SourceFiles:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._cache: dict[str, list[str] | None] = {}
+        # Secrets replaced in the lines read so far, by kind (see :mod:`.redact`).
+        self.redacted: Counter[str] = Counter()
 
     def lines(self, path: str) -> list[str] | None:
+        """The file's lines with secrets redacted (they may be shown to a hosted model)."""
         if path not in self._cache:
             target = (self._root / path).resolve()
             try:
                 target.relative_to(self._root.resolve())
                 text = target.read_text(encoding="utf-8", errors="replace")
-                self._cache[path] = text.splitlines()
             except (OSError, ValueError):
                 self._cache[path] = None
+            else:
+                lines = []
+                for raw in text.splitlines():
+                    clean, kinds = redact_line(raw)
+                    self.redacted.update(kinds)
+                    lines.append(clean)
+                self._cache[path] = lines
         return self._cache[path]
 
     def window(self, path: str, line: int, radius: int = CONTEXT_LINES) -> list[tuple[int, str]]:

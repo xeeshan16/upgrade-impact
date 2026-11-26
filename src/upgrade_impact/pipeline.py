@@ -293,22 +293,7 @@ def check_bump(
     report.results = match_claims(claims, usages, names)
     apply_runtime(report.results, notes, floor, bump.ecosystem)
     if review and settings.max_candidates > 0 and not _skip(report, deadline, "review"):
-        with telemetry.stage("review") as stage:
-            outcome = adjudicate(
-                chat,
-                bump,
-                notes,
-                report.results,
-                usages=usages,
-                files=SourceFiles(code_root),
-                max_candidates=settings.max_candidates,
-                max_output_tokens=settings.max_output_tokens,
-                max_calls=settings.max_review_calls,
-            )
-            stage.set("calls", outcome.run.calls)
-        if outcome.run.calls:
-            report.adjudication = outcome.run
-        report.warnings.extend(outcome.warnings)
+        _review(report, chat, notes=notes, usages=usages, code_root=code_root, settings=settings)
     dismissed = {d.line.n for d in report.dismissed}
     _settle_uncovered(
         report,
@@ -318,6 +303,41 @@ def check_bump(
         bump,
     )
     return report
+
+
+def _review(
+    report: BumpReport,
+    chat: ChatModel,
+    *,
+    notes: ReleaseNotes,
+    usages: list[Usage],
+    code_root: Path,
+    settings: Settings,
+) -> None:
+    """Have the model read the uncertain matches in their (redacted) code context."""
+    files = SourceFiles(code_root)
+    with get_telemetry().stage("review") as stage:
+        outcome = adjudicate(
+            chat,
+            report.bump,
+            notes,
+            report.results,
+            usages=usages,
+            files=files,
+            max_candidates=settings.max_candidates,
+            max_output_tokens=settings.max_output_tokens,
+            max_calls=settings.max_review_calls,
+        )
+        stage.set("calls", outcome.run.calls)
+        stage.set("redacted", sum(files.redacted.values()))
+    if files.redacted:
+        kinds = ", ".join(f"{n} {kind}" for kind, n in sorted(files.redacted.items()))
+        report.warnings.append(
+            f"redacted secrets in the code read for review before any model saw it ({kinds})"
+        )
+    if outcome.run.calls:
+        report.adjudication = outcome.run
+    report.warnings.extend(outcome.warnings)
 
 
 def _index(
