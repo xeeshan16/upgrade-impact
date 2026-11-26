@@ -93,6 +93,30 @@ def _run_lines(report: BumpReport) -> list[str]:
     return [line for line in runs if line]
 
 
+def _money(cost: float) -> str:
+    if cost == 0:
+        return "$0"
+    return f"${cost:.4f}" if cost < 1 else f"${cost:.2f}"
+
+
+def total_line(report: Report) -> str | None:
+    """One line with the whole check's model calls, tokens, estimated cost and time."""
+    acc = report.accounting
+    if acc is None:
+        return None
+    cached = f" ({acc.cached_calls} from cache)" if acc.cached_calls else ""
+    if acc.cost_usd is None:
+        cost = "cost unknown (set UPGRADE_IMPACT_PRICE_IN/_OUT)"
+    elif acc.price_basis == "local":
+        cost = "$0 (local model)"
+    else:
+        cost = f"est. {_money(acc.cost_usd)} ({acc.price_basis})"
+    return (
+        f"total: {acc.calls} model call(s){cached}, {acc.input_tokens:,} in / "
+        f"{acc.output_tokens:,} out tokens, {cost}, {report.elapsed_s:.1f} s"
+    )
+
+
 def _why(report: BumpReport) -> str | None:
     if report.verdict != "review":
         return None
@@ -266,6 +290,8 @@ def render_text(report: Report) -> str:
         out.extend(f"warning: {warning}" for warning in bump_report.warnings)
         out.append("")
     out.extend(f"note: {warning}" for warning in report.warnings)
+    if total := total_line(report):
+        out.append(total)
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -290,7 +316,14 @@ def _markdown_overview(report: Report) -> list[str]:
 
 
 def render_markdown(report: Report) -> str:
-    out: list[str] = _markdown_overview(report)
+    out = [*_markdown_overview(report), *_markdown_bumps(report)]
+    if total := total_line(report):
+        out.append(f"<sub>{total}</sub>")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _markdown_bumps(report: Report) -> list[str]:
+    out: list[str] = []
     for bump_report in report.ordered():
         bump = bump_report.bump
         out.append(f"### `{bump.package}` {bump.from_version or '?'} → {bump.to_version}")
@@ -366,7 +399,7 @@ def render_markdown(report: Report) -> str:
         for warning in bump_report.warnings:
             out.append(f"> {warning}")
         out.append("")
-    return "\n".join(out).rstrip() + "\n"
+    return out
 
 
 def _escape_data(text: str) -> str:

@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,7 @@ from upgrade_impact.models import (
     Usage,
 )
 from upgrade_impact.notes import collect_notes
+from upgrade_impact.pricing import account
 from upgrade_impact.providers.base import ChatModel
 from upgrade_impact.recheck import code_names, recheck_lines
 from upgrade_impact.runtime import (
@@ -363,6 +365,7 @@ def run_check(
     """Check every bump of ``target``. ``on_bump(i, total, bump)`` is called before
     each one (progress for long grouped checks)."""
     env = os.environ if env is None else env
+    started = time.monotonic()
     if not target.bumps:
         raise CheckError(
             f"no dependency bump found in {target.source}; pass --package, --from and --to"
@@ -375,17 +378,20 @@ def run_check(
         log.info("checking bump", extra={"bump": bump.label})
         if on_bump is not None:
             on_bump(i, len(target.bumps), bump)
-        report.bumps.append(
-            check_bump(
-                bump,
-                target=target,
-                code_root=code_root,
-                chat=chat,
-                registry=registry,
-                github=github,
-                settings=settings,
-                import_names=import_names,
-                review=review,
-            )
+        bump_started = time.monotonic()
+        bump_report = check_bump(
+            bump,
+            target=target,
+            code_root=code_root,
+            chat=chat,
+            registry=registry,
+            github=github,
+            settings=settings,
+            import_names=import_names,
+            review=review,
         )
+        bump_report.elapsed_s = round(time.monotonic() - bump_started, 3)
+        report.bumps.append(bump_report)
+    report.accounting = account(report, env)
+    report.elapsed_s = round(time.monotonic() - started, 3)
     return report

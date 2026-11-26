@@ -266,6 +266,26 @@ class ModelRun(BaseModel):
     latency_s: float = 0.0
 
 
+class Accounting(BaseModel):
+    """Totals over every model call of one check (all bumps, all stages)."""
+
+    provider: str
+    model: str
+    calls: int = 0
+    cached_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_latency_s: float = Field(
+        default=0.0, description="Summed latency of the uncached calls (they may overlap)."
+    )
+    cost_usd: float | None = Field(
+        default=None, description="Estimated cost; null when the model's price is unknown."
+    )
+    price_basis: str = Field(
+        default="unknown", description="override, local, list price or unknown."
+    )
+
+
 class IndexStats(BaseModel):
     files_scanned: int = 0
     files_importing: int = 0
@@ -318,6 +338,7 @@ class BumpReport(BaseModel):
     recheck: ModelRun | None = Field(
         default=None, description="Model calls that re-read unclaimed note lines."
     )
+    elapsed_s: float = Field(default=0.0, description="Wall-clock time spent on this bump.")
     warnings: list[str] = Field(default_factory=list)
 
     def count(self, status: ClaimStatus) -> int:
@@ -384,6 +405,10 @@ class Report(BaseModel):
     repository_root: str
     bumps: list[BumpReport] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    accounting: Accounting | None = Field(
+        default=None, description="Model calls, tokens and estimated cost over all bumps."
+    )
+    elapsed_s: float = Field(default=0.0, description="Wall-clock time of the whole check.")
 
     @computed_field  # type: ignore[prop-decorator]
     @property

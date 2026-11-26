@@ -93,6 +93,11 @@ All notable changes to this project are documented here. The format follows
   `find_usages` and `get_release_notes`, limited to the working directory or
   `UPGRADE_IMPACT_MCP_ROOTS`; configs for Claude Code, Cursor and VS Code in
   `examples/mcp/`.
+- Cost accounting: every report (text, Markdown, JSON `accounting`) ends with
+  the check's model calls, cached calls, tokens, estimated cost and wall time.
+  Prices come from a small table of published list prices, `$0` for local
+  models, and `UPGRADE_IMPACT_PRICE_IN` / `_OUT` override both; an unknown
+  hosted model is shown as "cost unknown", never guessed.
 
 ### Fixed
 

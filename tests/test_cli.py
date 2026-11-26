@@ -61,6 +61,11 @@ def test_check_a_pr_url_end_to_end(services: Services, capsys: pytest.CaptureFix
     assert bump["notes_versions"] == ["0.27.1", "0.27.2", "0.28.0", "0.28.1"]
     assert bump["notes_sources"] == ["changelog", "github-release"]
     assert bump["model"]["provider"] == "fake"
+    accounting = report["accounting"]
+    assert accounting["provider"] == "fake"
+    assert accounting["calls"] >= bump["model"]["calls"]
+    assert (accounting["cost_usd"], accounting["price_basis"]) == (0.0, "local")
+    assert report["elapsed_s"] >= bump["elapsed_s"] > 0
     by_params = {tuple(r["claim"]["parameters"]): r for r in bump["results"]}
     proxies = by_params[("proxies",)]
     # The notes name the parameter but not the API, so the match is "possible".
@@ -256,6 +261,9 @@ def test_second_run_is_answered_from_the_cache(
     assert "model: fake fake-extractor (fake provider: heuristic stand-in, not a model), " in second
     assert "4 call(s) (4 from cache), 0 in / 0 out tokens" in second
     assert "code review: fake fake-extractor" in second
+    total = second.rstrip().splitlines()[-1]
+    assert total.startswith("total: ")
+    assert "from cache), 0 in / 0 out tokens, $0 (local model)" in total
 
     code, uncached, _ = run(capsys, *args, "--no-cache", "--no-review")
     assert code == 0
