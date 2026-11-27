@@ -6,14 +6,13 @@ breaking-change claims with a language model, finds the lines in your repository
 that use what changed, and cites both sides: a release-note line and a code line,
 each verified by code. If nothing is affected, it says so and tells you why.
 
-> **Status: day 5 of 7.** Works end to end for PyPI and npm bumps on Python and
-> JavaScript/TypeScript code, with a model review of borderline matches, a
-> calibrated "no impact" and an eval harness with a dataset of 259 real bump
-> PRs. New today: grouped PRs checked package by package, a
+> **Status: 0.1.0.** Works end to end for PyPI and npm bumps on Python and
+> JavaScript/TypeScript code, as a CLI, a
 > [GitHub Action](#in-ci-the-github-action) and an
 > [MCP server](#for-coding-agents-the-mcp-server) for Claude Code, Cursor and
-> VS Code. Production hardening and the held-out eval are next
-> ([plan](docs/PLAN.md), [progress](docs/PROGRESS.md)).
+> VS Code. Scored once on a held-out split of real bump PRs against grep and
+> naive-prompt baselines: see [Evaluation](#held-out-results-v010) for what it
+> does well (few false alarms, cited answers) and where it still misses.
 
 ## What it does
 
@@ -69,7 +68,7 @@ matches are all `ASGITransport(app=...)` calls, i.e. false alarms. Before the ru
 qwen2.5:7b called six of the twelve it read "affected"; with it, all twelve stay
 "possible" and none is promoted. The review needs more context than these notes
 give to clear them (the 0.27.0 deprecation notice that names the replacement), which
-is still open (see [Limitations](#limitations-day-5)).
+is still open (see [Limitations](#limitations)).
 
 Both outputs are from the [`real-model` workflow](.github/workflows/real-model.yml)
 ([run 45027489304](https://github.com/xeeshan16/upgrade-impact/actions/runs/45027489304),
@@ -284,46 +283,79 @@ case, model calls and tokens. 95% intervals resample repositories.
 ```bash
 uv run upgrade-impact eval data/cases.jsonl --split dev --model qwen2.5:7b
 uv run upgrade-impact eval data/cases.jsonl --split dev --no-llm   # grep baselines only
+# the held-out numbers below:
+uv run upgrade-impact eval data/cases.jsonl --split test --per-label 10 --model qwen2.5:7b
 ```
 
-**Measured so far** (dev split, 120 cases from 22 repositories, release notes
-from GitHub Releases and CHANGELOGs,
-[CI run 45184488973](https://github.com/xeeshan16/upgrade-impact/actions/runs/45184488973)),
-the two baselines that need no model:
+### Held-out results (v0.1.0)
 
-| System | File precision | File recall | Detected | False alarms | Lines/case |
-|---|---|---|---|---|---|
-| import-grep | 8.3% (3-47) | 63.5% (35-100) | 91.3% (81-100) | 100% | 10.5 |
-| symbol-grep | 37.0% (17-59) | 19.2% (5-35) | 26.1% (12-38) | 23.7% (14-34) | 11.9 |
+Scored once on the held-out **test split** (139 bumps from 29 repositories, 38
+impact and 101 clean; no repository is shared with the dev split used during
+development). Nothing below was tuned on these cases.
 
-That is the bar: grepping imports finds most broken files but flags every clean
-bump (every case's package is imported somewhere, by construction), and grepping
-the notes' identifiers misses about three impact cases in four. (Those two rows
-predate day 4, which taught the breaking-line filter that symbol-grep also uses
-about changed defaults; CI re-measures them on every push.)
+**With a real model, on a fixed sample of the test split**: 10 impact and 10
+clean cases from 15 repositories, picked by a hash of the case id. qwen2.5:7b
+on Ollama on a CPU GitHub runner; the tool's default settings except at most 3
+uncached review calls per bump (`UPGRADE_IMPACT_MAX_REVIEW_CALLS=3`), a 1,200 s
+per-call timeout and 1 retry; no cached replies; a line hit is within 2 lines
+of a fixed hunk
+([run 46001813142](https://github.com/xeeshan16/upgrade-impact/actions/runs/46001813142),
+commit `b8198a6`). 95% intervals resample repositories.
 
-**Real model, dev sample.** qwen2.5:7b on Ollama, on a CPU GitHub runner, on a
-fixed sample of 8 dev cases (4 impact, 4 clean, 7 repositories; at most 3
-review calls per bump), all four systems on the same notes and code
-([run 45405936719](https://github.com/xeeshan16/upgrade-impact/actions/runs/45405936719),
-commit `bc6692f`):
+| System | Scoring | File precision | File recall | Hunk recall | Detected | False alarms | Lines/case |
+|---|---|---|---|---|---|---|---|
+| upgrade-impact | strict | 50.0% (0-100) | 8.7% (0-21) | 5.8% (0-10) | 20.0% (0-50) | **0.0%** (0-0) | 0.3 |
+| upgrade-impact | lenient | 33.3% (16-100) | 21.7% (7-44) | 8.7% (0-16) | 40.0% (14-60) | 10.0% (0-33) | 3.1 |
+| import-grep | strict | 16.1% (12-37) | 82.6% (62-94) | 7.7% (3-13) | 90.0% (67-100) | 100.0% | 10.4 |
+| symbol-grep | strict | 35.3% (23-100) | 26.1% (0-54) | 10.6% (0-23) | 40.0% (0-75) | 40.0% (0-75) | 6.5 |
+| naive-prompt | strict | 40.0% (0-100) | 8.7% (0-28) | 1.0% (0-7) | 20.0% (0-50) | 50.0% (17-88) | 0.7 |
 
-| System | Scoring | File precision | File recall | Detected | False alarms | Lines/case |
+*Strict* counts only "affected" lines; *lenient* adds "possible" ones.
+upgrade-impact made 71 model calls (111,196 input / 33,180 output tokens),
+about 12.5 minutes per bump on the CPU runner; the naive prompt made 20.
+
+**Without a model, on the whole test split** (all 139 cases,
+[run 46002112645](https://github.com/xeeshan16/upgrade-impact/actions/runs/46002112645)):
+
+| System | File precision | File recall | Hunk recall | Detected | False alarms | Lines/case |
 |---|---|---|---|---|---|---|
-| upgrade-impact | strict | 100% | 20.0% | 25.0% | 0% | 0.2 |
-| upgrade-impact | lenient | 66.7% | 80.0% | 75.0% | 0% | 7.4 |
-| import-grep | strict | 55.6% | 100% | 100% | 100% | 19.2 |
-| symbol-grep | strict | 61.5% | 80.0% | 75.0% | 0% | 22.1 |
-| naive-prompt | strict | 0% | 0% | 0% | 100% | 1.2 |
+| import-grep | 6.4% (4-9) | 43.9% (31-80) | 2.7% (1-13) | 86.8% (75-96) | 100.0% | 21.9 |
+| symbol-grep | 8.3% (5-21) | 19.7% (12-46) | 8.9% (6-26) | 44.7% (29-60) | 25.7% (18-34) | 88.7 |
 
-upgrade-impact's own answer: 3 of 4 clean bumps "no impact" and 1 "review";
-impact cases 1 "affected", 2 "review", 1 "unknown" (no release notes found).
-On the same sample the day 3 code answered "review" for all 7 cases with notes
-and flagged no line; the day 4 changes (ADR 0004 and the changed-default fixes)
-were found by reading this sample's per-case output, so these numbers measure
-development progress, not generalisation. Eight cases give intervals too wide to
-rank systems (see the run's report); the held-out test split is scored once, on
-day 7.
+**What this says.**
+
+- *Its warnings are worth reading.* On the 10 clean bumps upgrade-impact
+  flagged no line as affected, while grepping imports flagged every one,
+  grepping the notes' identifiers flagged 4 and the single naive prompt 5. On
+  the whole split, symbol-grep's 89 lines per case is what a reviewer would
+  otherwise read.
+- *It misses most real breakage.* It detected 2 of 10 impact cases strictly
+  and 4 of 10 counting "possible" lines; import-grep found the right file in 9
+  of 10, at the price of flagging every clean bump.
+- *"No impact" is not yet safe to trust on its own.* Of the 10 bumps it
+  called "no impact", 5 were impact cases. Reading those five: a deep-import
+  path that stopped working (`react-ace/lib/ace`), removed REST routes the
+  code calls as strings (`@octokit/plugin-rest-endpoint-methods`), a breaking
+  change in a transitive dependency (`vite-plugin-pwa` via workbox), and two
+  packages whose notes (4 and 8 lines) describe no breaking change at all (the
+  labels are the lines a maintainer changed on the PR, which can include
+  related cleanup; ADR 0003). On the clean bumps it answered "no impact" 5
+  times and "review" 5 times; 1 impact case had no release notes ("unknown").
+- 20 cases give wide intervals; treat the sample rows as a direction, not a
+  ranking. These failure causes were found by reading held-out output, so a
+  fix for them has to be measured on new cases (see the
+  [roadmap](docs/ROADMAP.md)).
+
+### Development history (dev split)
+
+On a fixed 8-case dev sample, the day 3 code answered "review" for every case
+with notes and flagged no line; after the day 4 changes (ADR 0004) it answered
+3 of 4 clean bumps "no impact" with no false alarm and found 1 of 4 impact
+cases strictly, 3 of 4 counting "possible" lines
+([run 45405936719](https://github.com/xeeshan16/upgrade-impact/actions/runs/45405936719)).
+Those changes were found by reading that sample, so they measure progress, not
+generalisation. CI scores the dev split with the fake provider behind a gate
+(`data/gate.json`) on every push.
 
 ## Configuration
 
@@ -388,8 +420,17 @@ on a span.
   would catch undocumented changes but costs far more and misses behaviour
   changes; notes are what maintainers write for exactly this purpose.
 
-## Limitations (day 6)
+## Limitations
 
+- "No impact" can be wrong: on the held-out sample it was the answer for 5
+  impact cases (see [Evaluation](#held-out-results-v010)). Import-path
+  changes (`pkg/lib/x` deep imports), string-addressed APIs (REST routes,
+  event names), breaking changes in a dependency's own dependencies and
+  release notes that do not mention the break are not caught.
+- Real-model numbers come from a 20-case held-out sample with a 7B local
+  model on a CPU runner; a larger or hosted model has not been measured. The
+  dataset's labels are what maintainers changed on the PR, which includes some
+  unrelated cleanup and misses fixes that landed in later PRs (ADR 0003).
 - The Action writes the job summary and annotations; it does not post a PR
   comment yet.
 - The time budget is checked between stages: a stage already running
@@ -417,10 +458,16 @@ on a span.
   been removed" does not say which API, and the earlier notice that does is
   outside the bump's range (the govbr_auth false alarms above).
 - Version ranges in titles such as `>=0.27,<0.29` resolve to the lower bound.
-- Real-model eval numbers so far come from an 8-case dev sample on a CPU
-  runner (see [Evaluation](#evaluation)); the held-out split is scored on day 7.
-  The dataset's labels are what maintainers changed, which includes some unrelated cleanup
-  and misses fixes that landed in later PRs (ADR 0003).
+- On a CPU a bump takes minutes (about 12.5 on a GitHub runner with
+  qwen2.5:7b); a GPU or a hosted model is much faster.
+
+## What I'd do next
+
+The [roadmap](docs/ROADMAP.md) has the list. The first three follow from the
+held-out misses: read deprecation history and the migration guides the notes
+link to, so claims name the API that changed; index import paths and string
+routes as usages; and measure a hosted model on the same sample, to separate
+what the pipeline contributes from what a 7B model can read.
 
 ## Development
 
