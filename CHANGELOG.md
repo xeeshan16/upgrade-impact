@@ -8,8 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.1.0] - 2026-11-27
 
-First release, tagged `v0.1.0`. Scored once on the held-out test split; the
-numbers are in the README.
+First release (`7d4892f`; the annotated `v0.1.0` tag is to be pushed by the
+maintainer). Scored once on the held-out test split; the numbers are in the
+README.
 
 ### Added
 

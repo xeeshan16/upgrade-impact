@@ -448,3 +448,48 @@ upgrade-impact and the naive prompt with qwen2.5:7b on a fixed sample),
 report the measured table with dataset, provider, model and settings, README
 polish with the architecture diagram, ROADMAP, a clean-install check and the
 `v0.1.0` tag.
+
+## Day 7 — 2026-11-27: finish
+
+Built:
+
+- **Held-out evaluation, scored once.** A manual `baselines` workflow scores
+  the no-model systems on a whole split; it ran on all 139 test cases. The
+  real-model eval ran on a fixed 10 + 10 sample of the test split with
+  qwen2.5:7b on Ollama (CPU runner, no cached replies, at most 3 review calls
+  per bump): about 5 hours, 71 model calls for upgrade-impact.
+- **Results** (README, "Held-out results"): on the 10 clean bumps
+  upgrade-impact flagged no affected line (import-grep flagged all 10,
+  symbol-grep 4, the naive prompt 5); it detected 2 of 10 impact cases
+  strictly and 4 of 10 with "possible" lines (import-grep 9 of 10). It called
+  5 impact cases "no impact". Reading them: a deep import path
+  (`react-ace/lib/ace`), REST routes called as strings
+  (`@octokit/plugin-rest-endpoint-methods`), a transitive dependency
+  (`vite-plugin-pwa` via workbox) and two packages whose short notes describe
+  no break. The README says this plainly, in the status, the evaluation and
+  the limitations.
+- **ROADMAP** ordered by those misses: import paths and string-addressed APIs
+  as usages, holding "no impact" when the notes are thin, deprecation history,
+  migration-guide links, embeddings, config files, a hosted-model comparison,
+  plus good-first-issue items. Anything that fixes a held-out miss has to be
+  measured on new cases.
+- README polish (status, held-out tables with dataset, provider, model and
+  settings, "What I'd do next"), version 0.1.0, CHANGELOG 0.1.0.
+
+Verified:
+
+- Locally: ruff, ruff format, mypy strict, 377 tests. A clean clone of
+  `7d4892f` installed with `uv tool install .` prints `upgrade-impact 0.1.0`,
+  checks a small httpx project (`--no-llm` and the fake provider; release
+  notes came from the CHANGELOG because the sandbox cannot reach the GitHub
+  Releases API for other repositories) and answers the MCP `initialize` and
+  `tools/list` requests with its three tools.
+- In CI: [run 46046208425](https://github.com/xeeshan16/upgrade-impact/actions/runs/46046208425)
+  on `7d4892f` (lint, tests on 3.11-3.13, dev eval gate, the Action on the
+  real PR, package and Docker smoke tests); held-out runs
+  [46001813142](https://github.com/xeeshan16/upgrade-impact/actions/runs/46001813142)
+  (real model) and
+  [46002112645](https://github.com/xeeshan16/upgrade-impact/actions/runs/46002112645)
+  (baselines).
+- The `v0.1.0` tag push was refused (HTTP 403); the maintainer pushes it:
+  `git tag -a v0.1.0 7d4892f -m "upgrade-impact 0.1.0" && git push origin v0.1.0`.
