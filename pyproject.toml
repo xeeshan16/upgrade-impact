@@ -1,6 +1,6 @@
 [project]
 name = "upgrade-impact"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Tell whether a Dependabot or Renovate bump touches your code, where, and why, with every claim cited to a release-note line and a code line."
 readme = "README.md"
 license = "MIT"

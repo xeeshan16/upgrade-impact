@@ -6,8 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-27
+
+First release, tagged `v0.1.0`. Scored once on the held-out test split; the
+numbers are in the README.
+
 ### Added
 
+- A manual `baselines` workflow that scores the no-model systems on a whole
+  split, and `docs/ROADMAP.md`.
 - `upgrade-impact check` for a GitHub PR URL, a manifest diff (file or stdin),
   or `--package/--from/--to`; `--ref` analyses the PR's code at a given commit.
 - Bump resolution from Dependabot and Renovate titles, Renovate body tables and
