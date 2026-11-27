@@ -1,0 +1,47 @@
+name: baselines
+
+# Scores the systems that need no model (import-grep, symbol-grep) on a whole
+# split. Manual only: the held-out test split is scored once, for the release
+# numbers, and never used to tune anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      split:
+        description: Dataset split
+        type: choice
+        options: [test, dev, all]
+        default: test
+
+permissions:
+  contents: read
+
+jobs:
+  baselines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - name: restore clones and release notes
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/upgrade-impact
+          key: baselines-${{ inputs.split }}-${{ hashFiles('data/cases.jsonl') }}
+      - name: deterministic systems on the whole split
+        env:
+          # Release notes come from the GitHub Releases API (and CHANGELOG files).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPLIT: ${{ inputs.split }}
+        run: |
+          uv run upgrade-impact eval data/cases.jsonl --split "$SPLIT" --no-llm \
+            --out "reports/baselines-$SPLIT"
+          cat "reports/baselines-$SPLIT/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baselines-${{ inputs.split }}
+          path: reports/
